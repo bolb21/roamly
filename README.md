@@ -45,8 +45,9 @@ src/theme/        Design tokens: colours, spacing, radii, typography
 | --- | --- |
 | Visited / Social tab switching | Working |
 | Challenge speech bubble → challenge sheet | Working (mock data); bubble can be collapsed to the 🐒 badge |
-| Visited-country count | Derived from mock country data |
-| Globe | Real Skia globe (Natural Earth countries). Drag to rotate with momentum; pinch to zoom (1×–6×, rubber-band + haptic at the limits). No country tapping yet. See `docs/globe.md`. |
+| Visited-country count | Derived from the visited store; updates as countries are toggled |
+| Globe | Real Skia globe (Natural Earth countries). Drag to rotate with momentum; pinch to zoom (1×–6×, rubber-band + haptic at the limits); two-finger twist. Tap a country to centre and highlight it and mark it visited/unvisited. See `docs/globe.md`. |
+| Visited countries | Saved on the phone (AsyncStorage) and survive reloads. First launch starts from the mock list in `src/data/countries.ts`. |
 | Zoom + / − buttons | Working |
 | Globe / map / locate buttons | **Visual only**, no action yet |
 | Social map | Placeholder panel |

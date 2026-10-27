@@ -71,7 +71,31 @@ realistic numbers run `npx expo start --no-dev --minify`.
 
 - The outer glow fades out by 1.6× (it's off-screen by then, and a large blur is costly).
 
+## Selection and visited state (milestone 3)
+
+- **Tap → country:** the tap worklet undoes the projection (screen point → point on the
+  sphere, using the current orientation and zoom) and sends lon/lat to the JS thread,
+  where `src/globe/hitTest.ts` uses d3-geo's spherical point-in-polygon. Under 1 ms per
+  tap. Antimeridian countries (Russia, Fiji) work because the test is spherical.
+- **Generous targets:** every country can be hit within 10 px of its anchor (so Luxembourg
+  is tappable at full-globe size), and taps up to 8 px off a coast pick that country.
+  Tapping open ocean or off the globe deselects.
+- **Anchor:** each country's anchor is the centroid of its largest polygon, so France
+  centres on France rather than between it and French Guiana.
+- **Centring:** the globe slerps to the smallest rotation that brings the anchor to the
+  front (it keeps the user's twist; it doesn't force north up). Any touch cancels it.
+- **Visited:** one store (`src/state/visitedCountries.tsx`) holds the visited ids, saved
+  with AsyncStorage. The globe draws all visited countries as one green path; the country
+  being toggled is drawn on its own with an animated grey ↔ green colour.
+
 ## Known compromises
+
+- At full-globe size small neighbours win taps near their borders (e.g. Paris picks
+  Belgium at 1×, France when zoomed in). Zoom in for precise picks.
+- The selected country stays highlighted when the user drags away, but the globe doesn't
+  stop them dragging it off-centre. The name bubble follows the country and hides when
+  it turns away.
+- Visited state isn't shown for the mock current location (Thailand) yet.
 
 - Natural Earth 1:110m is coarse; at 6× coastlines look angular. The terrain map
   (PRD step 5) takes over for closer views.

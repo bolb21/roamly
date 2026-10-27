@@ -36,6 +36,10 @@ export const globeColors = {
   land: '#8C96A8',
   landBorder: '#4B5671',
   visited: '#5CC46A',
+  // Selected country: lightened fill with a glowing teal outline.
+  selectedTint: 'rgba(255, 255, 255, 0.25)',
+  selectedOutline: '#4FF2F5',
+  selectedGlow: 'rgba(79, 242, 245, 0.85)',
   rim: 'rgba(130, 195, 255, 0.9)',
   glow: 'rgba(47, 140, 255, 0.85)',
 } as const;

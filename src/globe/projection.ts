@@ -171,5 +171,6 @@ export function buildGlobePath(
     out.push('z');
   }
 
-  return out.join('');
+  // Nothing visible (e.g. zoomed in over open ocean): a valid path that draws nothing.
+  return out.length > 0 ? out.join('') : 'M0 0';
 }

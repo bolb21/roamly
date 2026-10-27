@@ -112,3 +112,55 @@ export function quatFromView(lonDeg: number, latDeg: number): Quat {
   ];
   return quatFromMatrix(m);
 }
+
+/**
+ * Smallest rotation (applied on top of `q`) that brings the world point
+ * (wx, wy, wz) to the centre of the view. Keeps the current roll, so the
+ * globe doesn't spin north back up on its own.
+ */
+export function quatFaceFront(q: Quat, wx: number, wy: number, wz: number): Quat {
+  'worklet';
+  const m = quatToMatrix(q);
+  const vx = m[0] * wx + m[1] * wy + m[2] * wz;
+  const vy = m[3] * wx + m[4] * wy + m[5] * wz;
+  const vz = m[6] * wx + m[7] * wy + m[8] * wz;
+  // Axis = v × viewer direction (0, 0, 1); rotating v about it by the angle between them.
+  const sin = Math.hypot(vx, vy);
+  if (sin < 1e-9) {
+    return vz > 0 ? q : quatNormalize(quatMultiply(quatFromAxisAngle(1, 0, 0, Math.PI), q));
+  }
+  const delta = quatFromAxisAngle(vy / sin, -vx / sin, 0, Math.atan2(sin, vz));
+  return quatNormalize(quatMultiply(delta, q));
+}
+
+/** Spherical interpolation from `a` (t = 0) to `b` (t = 1) along the shorter path. */
+export function quatSlerp(a: Quat, b: Quat, t: number): Quat {
+  'worklet';
+  let [bw, bx, by, bz] = b;
+  let dot = a[0] * bw + a[1] * bx + a[2] * by + a[3] * bz;
+  if (dot < 0) {
+    // q and -q are the same orientation; flip to take the short way round.
+    bw = -bw;
+    bx = -bx;
+    by = -by;
+    bz = -bz;
+    dot = -dot;
+  }
+  if (dot > 0.9995) {
+    return quatNormalize([
+      a[0] + (bw - a[0]) * t,
+      a[1] + (bx - a[1]) * t,
+      a[2] + (by - a[2]) * t,
+      a[3] + (bz - a[3]) * t,
+    ]);
+  }
+  const theta = Math.acos(dot);
+  const sa = Math.sin((1 - t) * theta) / Math.sin(theta);
+  const sb = Math.sin(t * theta) / Math.sin(theta);
+  return [
+    sa * a[0] + sb * bw,
+    sa * a[1] + sb * bx,
+    sa * a[2] + sb * by,
+    sa * a[3] + sb * bz,
+  ];
+}

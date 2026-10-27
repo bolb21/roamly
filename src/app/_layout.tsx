@@ -7,6 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { AppHeader } from '@/components/AppHeader';
 import { PrimaryTabs } from '@/components/PrimaryTabs';
 import { ScreenBackground } from '@/components/ScreenBackground';
+import { VisitedCountriesProvider } from '@/state/visitedCountries';
 import { spacing } from '@/theme';
 
 /**
@@ -18,22 +19,24 @@ import { spacing } from '@/theme';
 export default function RootLayout() {
   return (
     <GestureHandlerRootView style={styles.root}>
-      <Tabs style={styles.root}>
-        <StatusBar style="light" />
-        <ScreenBackground />
-        <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
-          <AppHeader />
-          <PrimaryTabs />
-          <View style={styles.content}>
-            <TabSlot />
-          </View>
-        </SafeAreaView>
+      <VisitedCountriesProvider>
+        <Tabs style={styles.root}>
+          <StatusBar style="light" />
+          <ScreenBackground />
+          <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+            <AppHeader />
+            <PrimaryTabs />
+            <View style={styles.content}>
+              <TabSlot />
+            </View>
+          </SafeAreaView>
 
-        <TabList style={styles.hidden}>
-          <TabTrigger name="index" href="/" />
-          <TabTrigger name="social" href="/social" />
-        </TabList>
-      </Tabs>
+          <TabList style={styles.hidden}>
+            <TabTrigger name="index" href="/" />
+            <TabTrigger name="social" href="/social" />
+          </TabList>
+        </Tabs>
+      </VisitedCountriesProvider>
     </GestureHandlerRootView>
   );
 }

@@ -2,6 +2,7 @@
 // backed by a real data source without changing the screens.
 
 export type Country = {
+  /** ISO 3166-1 numeric code, e.g. '764' for Thailand (same ids as the globe's map data). */
   id: string;
   name: string;
   visited: boolean;

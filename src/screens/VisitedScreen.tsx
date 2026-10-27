@@ -9,23 +9,21 @@ import { Globe } from '@/components/globe/Globe';
 import { MapControlButton } from '@/components/MapControlButton';
 import { VisitedCount } from '@/components/VisitedCount';
 import { demoUser, todaysChallenge } from '@/data/challenges';
-import { mockCountries } from '@/data/countries';
 import { MIN_ZOOM, stepZoom } from '@/globe/zoom';
+import { useVisitedCountries } from '@/state/visitedCountries';
 import { colors, spacing, typography } from '@/theme';
 
 /**
  * Home / Visited tab.
  *
- * Current state: the globe rotates with drag and momentum and zooms with pinch
- * or the +/- buttons. Country selection is still to come; the globe/map mode
- * and locate buttons do nothing yet.
+ * Current state: the globe rotates, zooms (pinch or +/-), and countries can be
+ * tapped and marked visited. The globe/map mode and locate buttons do nothing yet.
  */
 export function VisitedScreen() {
   const insets = useSafeAreaInsets();
 
-  // Domain data: local copy so visited toggling can be added later.
-  const [countries] = useState(mockCountries);
-  const visitedCount = countries.filter((c) => c.visited).length;
+  // Domain data, from the shared store so the globe and the count always agree.
+  const { visitedIds, toggleVisited } = useVisitedCountries();
 
   // Transient UI state
   const [bubbleExpanded, setBubbleExpanded] = useState(true);
@@ -42,7 +40,7 @@ export function VisitedScreen() {
   return (
     <View style={[styles.container, { paddingBottom: insets.bottom + spacing.sm }]}>
       <View style={styles.topRow}>
-        <VisitedCount count={visitedCount} />
+        <VisitedCount count={visitedIds.size} />
         <ChallengeBubble
           firstName={demoUser.firstName}
           challenge={todaysChallenge}
@@ -55,11 +53,17 @@ export function VisitedScreen() {
 
       <View style={styles.globeArea} onLayout={onGlobeAreaLayout}>
         {globeArea.width > 0 && (
-          <Globe width={globeArea.width} height={globeArea.height} zoom={zoom} />
+          <Globe
+            width={globeArea.width}
+            height={globeArea.height}
+            zoom={zoom}
+            visitedIds={visitedIds}
+            onToggleVisited={toggleVisited}
+          />
         )}
       </View>
 
-      <Text style={styles.previewNote}>Drag to spin · pinch to zoom</Text>
+      <Text style={styles.previewNote}>Drag to spin · pinch to zoom · tap a country</Text>
 
       <View style={styles.controlsRow}>
         <View style={styles.controlGroup}>

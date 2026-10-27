@@ -4,8 +4,8 @@
 // Runs once on the JS thread at startup. Kept free of React/Expo imports so it
 // can be tested in plain Node.
 
-import { geoCentroid } from 'd3-geo';
-import type { Feature, Geometry, MultiPolygon, Polygon } from 'geojson';
+import { geoArea, geoCentroid, geoDistance } from 'd3-geo';
+import type { Feature, Geometry, MultiPolygon, Polygon, Position } from 'geojson';
 import { feature } from 'topojson-client';
 import { presimplify, quantile, simplify } from 'topojson-simplify';
 import type { GeometryCollection, Topology } from 'topojson-specification';
@@ -16,8 +16,14 @@ export type CountryShape = {
   /** ISO 3166-1 numeric code from Natural Earth (falls back to the name if missing). */
   id: string;
   name: string;
-  /** [longitude, latitude] in degrees, from d3-geo. Used to rotate the globe to a country. */
-  centroid: [number, number];
+  /**
+   * [longitude, latitude] in degrees: centroid of the country's largest polygon, so
+   * e.g. France centres on France, not between it and French Guiana. The globe turns
+   * this point to face the user on selection, and the name bubble points at it.
+   */
+  anchor: [number, number];
+  /** Angular distance (radians) from the anchor to the country's furthest point. */
+  radius: number;
   /** Full-detail GeoJSON, kept for d3-geo hit-testing. */
   feature: Feature<Polygon | MultiPolygon>;
 };
@@ -28,6 +34,11 @@ export type GlobeData = {
   /** Simplified copy (shared borders simplified once, so neighbours stay seamless). */
   simplified: GlobeGeometry;
   countries: CountryShape[];
+  /**
+   * Each country's anchor as a 3D unit vector (x,y,z flattened, by country index).
+   * Worklets use this instead of `countries`, which is too big to copy to the UI thread.
+   */
+  anchorPoints: number[];
 };
 
 /** Share of the least significant border points dropped in the simplified copy. */
@@ -61,20 +72,59 @@ export function buildGlobeData(topology: Topology): GlobeData {
       return;
     }
     const name = f.properties?.name ?? 'Unknown';
+    const polygons = g.type === 'Polygon' ? [g.coordinates] : g.coordinates;
+    const anchor = largestPolygonCentroid(polygons);
     countryIndexByFeature.push(countries.length);
     countries.push({
       id: f.id != null ? String(f.id) : name,
       name,
-      centroid: geoCentroid(f) as [number, number],
+      anchor,
+      radius: furthestPoint(anchor, polygons),
       feature: f as Feature<Polygon | MultiPolygon>,
     });
   });
+
+  const anchorPoints: number[] = [];
+  for (const { anchor } of countries) {
+    const [lon, lat] = anchor;
+    anchorPoints.push(
+      Math.cos(lat * DEG) * Math.cos(lon * DEG),
+      Math.cos(lat * DEG) * Math.sin(lon * DEG),
+      Math.sin(lat * DEG),
+    );
+  }
 
   return {
     detailed: toGeometry(fullFeatures, countryIndexByFeature),
     simplified: toGeometry(simpleFeatures, countryIndexByFeature),
     countries,
+    anchorPoints,
   };
+}
+
+function largestPolygonCentroid(polygons: Position[][][]): [number, number] {
+  let best = polygons[0];
+  let bestArea = -1;
+  for (const coordinates of polygons) {
+    const area = geoArea({ type: 'Polygon', coordinates });
+    if (area > bestArea) {
+      best = coordinates;
+      bestArea = area;
+    }
+  }
+  return geoCentroid({ type: 'Polygon', coordinates: best }) as [number, number];
+}
+
+function furthestPoint(anchor: [number, number], polygons: Position[][][]): number {
+  let max = 0;
+  for (const polygon of polygons) {
+    for (const ring of polygon) {
+      for (const [lon, lat] of ring) {
+        max = Math.max(max, geoDistance(anchor, [lon, lat]));
+      }
+    }
+  }
+  return max;
 }
 
 function toGeometry(features: CountryFeature[], countryIndexByFeature: number[]): GlobeGeometry {

@@ -46,8 +46,9 @@ src/theme/        Design tokens: colours, spacing, radii, typography
 | Visited / Social tab switching | Working |
 | Challenge speech bubble → challenge sheet | Working (mock data); bubble can be collapsed to the 🐒 badge |
 | Visited-country count | Derived from mock country data |
-| Globe | Real Skia globe (Natural Earth countries). Drag to rotate with momentum. No zoom or country tapping yet. See `docs/globe.md`. |
-| Globe / map / zoom / locate buttons | **Visual only**, no action yet |
+| Globe | Real Skia globe (Natural Earth countries). Drag to rotate with momentum; pinch to zoom (1×–6×, rubber-band + haptic at the limits). No country tapping yet. See `docs/globe.md`. |
+| Zoom + / − buttons | Working |
+| Globe / map / locate buttons | **Visual only**, no action yet |
 | Social map | Placeholder panel |
 
 Design adaptations from the reference image: points/XP/levels/stats cards and the five-item bottom bar removed; bell and avatar removed (not features); tagline changed from "Collect" to "Discover".

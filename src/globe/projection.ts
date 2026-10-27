@@ -33,10 +33,16 @@ export const PATH_SCALE = 4;
 const LIMB_STEP = 0.12;
 /** Points closer than this (path units, Manhattan) to the previous one are dropped. */
 const MIN_STEP = 1.2 * PATH_SCALE;
+/**
+ * A cap with sin(angular radius) = s projects to within 1.42 · r · s of its
+ * projected centre (the chord 2·sin(ρ/2) is at most √2·sin(ρ) for ρ ≤ 90°).
+ */
+const CAP_SCREEN_FACTOR = 1.42;
 
 /**
  * Builds the SVG path for every ring whose country passes `include`.
- * `cx`, `cy`, `r` are in screen pixels. Pass `include = null` to draw all countries.
+ * `cx`, `cy`, `r` are in screen pixels; `width` × `height` is the visible canvas,
+ * and rings wholly outside it are skipped. Pass `include = null` to draw all countries.
  */
 export function buildGlobePath(
   geo: GlobeGeometry,
@@ -44,6 +50,8 @@ export function buildGlobePath(
   cx: number,
   cy: number,
   r: number,
+  width: number,
+  height: number,
   include: ((countryIndex: number) => boolean) | null,
 ): string {
   'worklet';
@@ -55,6 +63,8 @@ export function buildGlobePath(
   const ox = cx * PATH_SCALE;
   const oy = cy * PATH_SCALE;
   const rr = r * PATH_SCALE;
+  const maxX = width * PATH_SCALE;
+  const maxY = height * PATH_SCALE;
 
   for (let ri = 0; ri < geo.ringStarts.length; ri++) {
     if (include !== null && !include(geo.ringCountry[ri])) continue;
@@ -64,8 +74,17 @@ export function buildGlobePath(
     const ccx = geo.ringCentres[c];
     const ccy = geo.ringCentres[c + 1];
     const ccz = geo.ringCentres[c + 2];
+    const sinRadius = geo.ringSinRadius[ri];
     const centreDepth = m20 * ccx + m21 * ccy + m22 * ccz;
-    if (centreDepth < -geo.ringSinRadius[ri]) continue;
+    if (centreDepth < -sinRadius) continue;
+
+    // Off-screen cull (matters when zoomed in): the whole cap is outside the canvas.
+    if (sinRadius <= 1) {
+      const reach = CAP_SCREEN_FACTOR * rr * sinRadius;
+      const px = ox + rr * (m00 * ccx + m01 * ccy + m02 * ccz);
+      const py = oy - rr * (m10 * ccx + m11 * ccy + m12 * ccz);
+      if (px + reach < 0 || px - reach > maxX || py + reach < 0 || py - reach > maxY) continue;
+    }
 
     const start = geo.ringStarts[ri];
     const n = geo.ringEnds[ri] - start;

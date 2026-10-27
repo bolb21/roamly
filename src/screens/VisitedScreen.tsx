@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
+import { useSharedValue } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ChallengeBubble } from '@/components/challenge/ChallengeBubble';
@@ -9,13 +10,15 @@ import { MapControlButton } from '@/components/MapControlButton';
 import { VisitedCount } from '@/components/VisitedCount';
 import { demoUser, todaysChallenge } from '@/data/challenges';
 import { mockCountries } from '@/data/countries';
+import { MIN_ZOOM, stepZoom } from '@/globe/zoom';
 import { colors, spacing, typography } from '@/theme';
 
 /**
  * Home / Visited tab.
  *
- * Current state: the globe rotates with drag and momentum. Zoom, country
- * selection and the map controls are still to come; the buttons do nothing yet.
+ * Current state: the globe rotates with drag and momentum and zooms with pinch
+ * or the +/- buttons. Country selection is still to come; the globe/map mode
+ * and locate buttons do nothing yet.
  */
 export function VisitedScreen() {
   const insets = useSafeAreaInsets();
@@ -27,11 +30,13 @@ export function VisitedScreen() {
   // Transient UI state
   const [bubbleExpanded, setBubbleExpanded] = useState(true);
   const [challengeOpen, setChallengeOpen] = useState(false);
-  const [globeSize, setGlobeSize] = useState(0);
+  const [globeArea, setGlobeArea] = useState({ width: 0, height: 0 });
+  // Shared by pinch (inside Globe) and the zoom buttons below.
+  const zoom = useSharedValue(MIN_ZOOM);
 
   const onGlobeAreaLayout = (e: LayoutChangeEvent) => {
     const { width, height } = e.nativeEvent.layout;
-    setGlobeSize(Math.floor(Math.min(width, height) * 0.94));
+    setGlobeArea({ width: Math.floor(width), height: Math.floor(height) });
   };
 
   return (
@@ -49,10 +54,12 @@ export function VisitedScreen() {
       </View>
 
       <View style={styles.globeArea} onLayout={onGlobeAreaLayout}>
-        {globeSize > 0 && <Globe size={globeSize} />}
+        {globeArea.width > 0 && (
+          <Globe width={globeArea.width} height={globeArea.height} zoom={zoom} />
+        )}
       </View>
 
-      <Text style={styles.previewNote}>Drag to spin · zoom buttons arrive next</Text>
+      <Text style={styles.previewNote}>Drag to spin · pinch to zoom</Text>
 
       <View style={styles.controlsRow}>
         <View style={styles.controlGroup}>
@@ -60,8 +67,16 @@ export function VisitedScreen() {
           <MapControlButton icon="map-outline" accessibilityLabel="Terrain map view" />
         </View>
         <View style={styles.controlGroup}>
-          <MapControlButton icon="remove" accessibilityLabel="Zoom out" />
-          <MapControlButton icon="add" accessibilityLabel="Zoom in" />
+          <MapControlButton
+            icon="remove"
+            accessibilityLabel="Zoom out"
+            onPress={() => stepZoom(zoom, -1)}
+          />
+          <MapControlButton
+            icon="add"
+            accessibilityLabel="Zoom in"
+            onPress={() => stepZoom(zoom, 1)}
+          />
           <MapControlButton icon="navigate-outline" accessibilityLabel="Centre on current area" />
         </View>
       </View>

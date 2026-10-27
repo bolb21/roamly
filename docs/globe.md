@@ -53,7 +53,26 @@ spent building the globe path each frame. Turn it off with `SHOW_PERF` in
 Expo Go runs a development JS bundle, which is slower than a release build. For
 realistic numbers run `npx expo start --no-dev --minify`.
 
+## Zoom (milestone 2)
+
+- Zoom multiplies the globe radius (`src/globe/zoom.ts`): 1× to 6×. Pinching past a
+  limit rubber-bands, gives a light haptic (`expo-haptics`), and springs back on release.
+- The point between the fingers stays put while pinching (the globe rotates to compensate).
+- From 2× up the globe draws the full-detail outlines instead of the simplified copy.
+- Rings wholly outside the canvas are skipped, so zoomed in is cheaper, not dearer:
+
+| Zoom | Outlines | JIT ms/frame | Interpreter ms/frame |
+| --- | --- | --- | --- |
+| 1× | simplified | 0.38 | 1.69 |
+| 2× | detailed | 0.40 | 2.03 |
+| 6× | detailed | 0.13 | 0.71 |
+
+- The outer glow fades out by 1.6× (it's off-screen by then, and a large blur is costly).
+
 ## Known compromises
+
+- Natural Earth 1:110m is coarse; at 6× coastlines look angular. The terrain map
+  (PRD step 5) takes over for closer views.
 
 - Countries cut at the ±180° antimeridian (eastern Russia, Fiji) show a faint border
   line along the cut.

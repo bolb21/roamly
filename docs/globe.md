@@ -58,6 +58,8 @@ realistic numbers run `npx expo start --no-dev --minify`.
 - Zoom multiplies the globe radius (`src/globe/zoom.ts`): 1× to 6×. Pinching past a
   limit rubber-bands, gives a light haptic (`expo-haptics`), and springs back on release.
 - The point between the fingers stays put while pinching (the globe rotates to compensate).
+- Two-finger twist rolls the globe about the line of sight. Drag, pinch and twist all run
+  at once.
 - From 2× up the globe draws the full-detail outlines instead of the simplified copy.
 - Rings wholly outside the canvas are skipped, so zoomed in is cheaper, not dearer:
 

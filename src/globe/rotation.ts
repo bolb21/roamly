@@ -51,6 +51,17 @@ export function quatApplyDrag(q: Quat, dx: number, dy: number, radius: number): 
   return quatNormalize(quatMultiply(delta, q));
 }
 
+/**
+ * Twists the globe about the line of sight by `angle` radians, clockwise on
+ * screen (the convention of gesture-handler's rotation gesture).
+ */
+export function quatApplyTwist(q: Quat, angle: number): Quat {
+  'worklet';
+  // View z points at the viewer, so a positive angle about it is anticlockwise.
+  const delta = quatFromAxisAngle(0, 0, 1, -angle);
+  return quatNormalize(quatMultiply(delta, q));
+}
+
 /** Row-major 3x3 rotation matrix (world → view). */
 export function quatToMatrix(q: Quat): number[] {
   'worklet';

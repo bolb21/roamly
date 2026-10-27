@@ -5,6 +5,7 @@ import {
   GestureDetector,
   usePanGesture,
   usePinchGesture,
+  useRotationGesture,
   useSimultaneousGestures,
 } from 'react-native-gesture-handler';
 import {
@@ -21,7 +22,13 @@ import { scheduleOnRN } from 'react-native-worklets';
 
 import { getGlobeData } from '@/globe/globeData';
 import { buildGlobePath, PATH_SCALE } from '@/globe/projection';
-import { quatApplyDrag, quatFromView, quatToMatrix, type Quat } from '@/globe/rotation';
+import {
+  quatApplyDrag,
+  quatApplyTwist,
+  quatFromView,
+  quatToMatrix,
+  type Quat,
+} from '@/globe/rotation';
 import {
   clampZoom,
   DETAIL_ZOOM,
@@ -46,8 +53,8 @@ const INITIAL_VIEW = { lon: 15, lat: 25 };
 const BASE_RADIUS_FRACTION = 0.423;
 /** Momentum friction for withDecay (closer to 1 = longer spin). */
 const DECELERATION = 0.997;
-/** Spring used when a pinch is released past a zoom limit. */
-const ZOOM_SPRING = { damping: 18, stiffness: 180 };
+/** Spring used when a pinch is released past a zoom limit: one small overshoot, then settles. */
+const ZOOM_SPRING = { duration: 450, dampingRatio: 0.75 };
 /** The outer glow fades out by this zoom (it's off-screen anyway, and blur is costly when large). */
 const GLOW_FADE_ZOOM = 1.6;
 /** Overlay with UI-thread fps and per-frame path build time. Set to false before demos. */
@@ -179,7 +186,15 @@ export function Globe({ width, height, zoom }: Props) {
     },
   });
 
-  const gesture = useSimultaneousGestures(pan, pinch);
+  // Two-finger twist rolls the globe about its centre (e.g. to put north back up).
+  const twist = useRotationGesture({
+    onUpdate: (e) => {
+      'worklet';
+      orientation.set(quatApplyTwist(orientation.get(), e.rotationChange));
+    },
+  });
+
+  const gesture = useSimultaneousGestures(pan, pinch, twist);
 
   // Light source and shading follow the globe as it grows.
   const highlight = useDerivedValue(() => ({

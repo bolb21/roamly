@@ -43,9 +43,21 @@ export function zoomLimitHaptic() {
   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 }
 
-/** Zoom buttons: animate one step in (`direction` 1) or out (-1). */
-export function stepZoom(zoom: SharedValue<number>, direction: 1 | -1) {
-  const target = clampZoom(zoom.get() * BUTTON_STEP ** direction);
+export type ZoomLimits = { min: number; max: number };
+
+/** Flat map zoom: 1 = whole world fits the width; 12 is about country-close. */
+export const MAP_ZOOM: ZoomLimits = { min: 1, max: 12 };
+
+/**
+ * Zoom buttons: animate one step in (`direction` 1) or out (-1). Uses the globe's
+ * limits unless others are given.
+ */
+export function stepZoom(
+  zoom: SharedValue<number>,
+  direction: 1 | -1,
+  limits: ZoomLimits = { min: MIN_ZOOM, max: MAX_ZOOM },
+) {
+  const target = Math.min(limits.max, Math.max(limits.min, zoom.get() * BUTTON_STEP ** direction));
   if (Math.abs(target - zoom.get()) < 0.01) {
     zoomLimitHaptic();
     return;

@@ -1,4 +1,15 @@
-import { BlurMask, Canvas, Circle, Path, RadialGradient } from '@shopify/react-native-skia';
+import {
+  BlurMask,
+  Canvas,
+  Circle,
+  Group,
+  LinearGradient,
+  Path,
+  RadialGradient,
+  Rect,
+  Skia,
+  type SkPath,
+} from '@shopify/react-native-skia';
 import { useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import {
@@ -44,9 +55,10 @@ import {
   rubberBandZoom,
   zoomLimitHaptic,
 } from '@/globe/zoom';
-import { globeColors } from '@/theme';
+import { globeColors, globeStyle } from '@/theme';
 
 import { CountryBubble, type BubbleAnchor } from './CountryBubble';
+import { makeLandLayerPaint } from './landLayer';
 
 type Props = {
   /** Size of the canvas, in px. The globe is centred in it. */
@@ -77,8 +89,31 @@ const VISITED_FADE_MS = 500;
 const GLOW_FADE_ZOOM = 1.6;
 /** Overlay with UI-thread fps and per-frame path build time. Set to false before demos. */
 const SHOW_PERF = true;
+/** Shown in the perf overlay, to confirm the phone is running the latest code. */
+const BUILD_LABEL = 'map v2';
+
+const TRANSPARENT = 'rgba(0,0,0,0)';
+/** Halo gradient stops: solid at the sphere's edge, fading out over the halo's width. */
+const HALO_EDGE = 1 / (1 + globeStyle.halo.width);
+const HALO_STOPS = [0, HALO_EDGE, (HALO_EDGE + 1) / 2, 1];
+
+/** Rim gradients are centred this far (× radius) off-centre, along the light direction. */
+const RIM_CENTRE_SHIFT = 0.12;
+/** …so they reach the far edge at this many radii. */
+const RIM_REACH = 1 + RIM_CENTRE_SHIFT * Math.SQRT2;
 
 const LAND_PATH_TRANSFORM = [{ scale: 1 / PATH_SCALE }];
+
+/** Turns a globe SVG path string into a Skia path (each Path sets its own fill type). */
+function toSkPath(svg: string): SkPath {
+  'worklet';
+  return Skia.Path.MakeFromSVGString(svg) ?? Skia.Path.Make();
+}
+const HIGHLIGHT_TRANSFORM = [
+  { translateX: -globeStyle.outlineHighlight.offset },
+  { translateY: -globeStyle.outlineHighlight.offset },
+  { scale: 1 / PATH_SCALE },
+];
 const NO_COUNTRY = -1;
 
 /**
@@ -189,11 +224,15 @@ export function Globe({ width, height, zoom, visitedIds, onToggleVisited }: Prop
   );
 
   // --- Paths, rebuilt every frame the view changes ---
+  // Each is built as an SVG string and turned into a Skia path once, then shared by
+  // every layer that draws it (a string would be re-parsed by each layer).
   const landPath = useDerivedValue(() => {
     const t0 = performance.now();
     // Simplified outlines are plenty at full-globe size; switch to full detail when zoomed in.
     const geo = zoom.get() >= DETAIL_ZOOM ? detailed : simplified;
-    const path = buildGlobePath(geo, matrix.get(), cx, cy, radius.get(), width, height, null);
+    const path = toSkPath(
+      buildGlobePath(geo, matrix.get(), cx, cy, radius.get(), width, height, null),
+    );
     if (SHOW_PERF) {
       buildMs.set(buildMs.get() * 0.9 + (performance.now() - t0) * 0.1);
     }
@@ -204,34 +243,59 @@ export function Globe({ width, height, zoom, visitedIds, onToggleVisited }: Prop
     const geo = zoom.get() >= DETAIL_ZOOM ? detailed : simplified;
     const mask = visitedMask.get();
     const fading = fadeIndex.get();
-    return buildGlobePath(
-      geo,
-      matrix.get(),
-      cx,
-      cy,
-      radius.get(),
-      width,
-      height,
-      (i) => mask[i] === true && i !== fading,
+    return toSkPath(
+      buildGlobePath(
+        geo,
+        matrix.get(),
+        cx,
+        cy,
+        radius.get(),
+        width,
+        height,
+        (i) => mask[i] === true && i !== fading,
+      ),
     );
   });
 
   const fadePath = useDerivedValue(() => {
     const fading = fadeIndex.get();
-    if (fading === NO_COUNTRY) return 'M0 0';
+    if (fading === NO_COUNTRY) return toSkPath('M0 0');
     const geo = zoom.get() >= DETAIL_ZOOM ? detailed : simplified;
-    return buildGlobePath(geo, matrix.get(), cx, cy, radius.get(), width, height, (i) => i === fading);
+    return toSkPath(
+      buildGlobePath(geo, matrix.get(), cx, cy, radius.get(), width, height, (i) => i === fading),
+    );
   });
 
   const fadeColor = useDerivedValue(() =>
     interpolateColor(fadeProgress.get(), [0, 1], [globeColors.land, globeColors.visited]),
   );
 
+  // --- Raised countries ---
+  // Side depth in screen px; it grows a little as you zoom in.
+  const slabOffset = useDerivedValue(
+    () => globeStyle.slab.offset * Math.pow(zoom.get(), globeStyle.slab.zoomGrowth),
+  );
+  // The land tops' layer adds the sides and shallow-water glow (see landLayer.ts).
+  const landLayer = useDerivedValue(() =>
+    makeLandLayerPaint(slabOffset.get(), Math.sqrt(zoom.get())),
+  );
+  // Sides are clipped to the sphere so they don't poke out past its edge.
+  const sphereClip = useDerivedValue(() => {
+    const r = radius.get();
+    return {
+      rect: { x: cx - r, y: cy - r, width: 2 * r, height: 2 * r },
+      rx: r,
+      ry: r,
+    };
+  });
+
   const selectedPath = useDerivedValue(() => {
     const sel = selectedIndex.get();
-    if (sel === NO_COUNTRY) return 'M0 0';
+    if (sel === NO_COUNTRY) return toSkPath('M0 0');
     const geo = zoom.get() >= DETAIL_ZOOM ? detailed : simplified;
-    return buildGlobePath(geo, matrix.get(), cx, cy, radius.get(), width, height, (i) => i === sel);
+    return toSkPath(
+      buildGlobePath(geo, matrix.get(), cx, cy, radius.get(), width, height, (i) => i === sel),
+    );
   });
 
   // Screen position of the selected country's anchor, for the name bubble.
@@ -246,7 +310,11 @@ export function Globe({ width, height, zoom, visitedIds, onToggleVisited }: Prop
     const x = cx + r * (m[0] * X + m[1] * Y + m[2] * Z);
     const y = cy - r * (m[3] * X + m[4] * Y + m[5] * Z);
     const depth = m[6] * X + m[7] * Y + m[8] * Z;
-    return { x, y, visible: depth > 0.2 && x >= 0 && x <= width && y >= 0 && y <= height };
+    return {
+      x,
+      y,
+      visible: depth > 0.2 && x >= 0 && x <= width && y >= 0 && y <= height,
+    };
   });
 
   // --- Gestures ---
@@ -370,11 +438,43 @@ export function Globe({ width, height, zoom, visitedIds, onToggleVisited }: Prop
     y: cy - radius.get() * 0.4,
   }));
   const oceanGradientRadius = useDerivedValue(() => radius.get() * 1.6);
-  const shadingGradientRadius = useDerivedValue(() => radius.get() * 1.5);
-  const glowRadius = useDerivedValue(() => baseRadius * Math.min(zoom.get(), GLOW_FADE_ZOOM));
+  const centre = { x: cx, y: cy };
+  const backdropRadius = Math.max(width, height) * globeStyle.backdrop.radius;
+  const haloRadius = useDerivedValue(() => radius.get() * (1 + globeStyle.halo.width));
+  // The halo is off-screen once zoomed in; fade it out by GLOW_FADE_ZOOM.
   const glowOpacity = useDerivedValue(() =>
     Math.min(1, Math.max(0, (GLOW_FADE_ZOOM - zoom.get()) / (GLOW_FADE_ZOOM - MIN_ZOOM))),
   );
+  // Light comes from the top-left of the screen. Shading runs across the sphere
+  // from the lit corner to the shadowed one.
+  const shadeStart = useDerivedValue(() => ({
+    x: cx - radius.get() * 0.7,
+    y: cy - radius.get() * 0.7,
+  }));
+  const shadeEnd = useDerivedValue(() => ({
+    x: cx + radius.get() * 0.7,
+    y: cy + radius.get() * 0.7,
+  }));
+  // Rim light / rim shadow: radial gradients centred off to one side, so they only
+  // reach the far edge and form a crescent there.
+  const rimLightCentre = useDerivedValue(() => ({
+    x: cx + radius.get() * RIM_CENTRE_SHIFT,
+    y: cy + radius.get() * RIM_CENTRE_SHIFT,
+  }));
+  const rimShadowCentre = useDerivedValue(() => ({
+    x: cx - radius.get() * RIM_CENTRE_SHIFT,
+    y: cy - radius.get() * RIM_CENTRE_SHIFT,
+  }));
+  const rimGradientRadius = useDerivedValue(() => radius.get() * RIM_REACH);
+  // Land tint runs top to bottom of the sphere (in path units, as the land is drawn scaled).
+  const landGradientStart = useDerivedValue(() => ({
+    x: cx * PATH_SCALE,
+    y: (cy - radius.get()) * PATH_SCALE,
+  }));
+  const landGradientEnd = useDerivedValue(() => ({
+    x: cx * PATH_SCALE,
+    y: (cy + radius.get()) * PATH_SCALE,
+  }));
 
   const selectedCountry =
     selected === null
@@ -390,9 +490,29 @@ export function Globe({ width, height, zoom, visitedIds, onToggleVisited }: Prop
       <GestureDetector gesture={gesture}>
         <View>
           <Canvas style={{ width, height }}>
-            {/* Outer glow */}
-            <Circle cx={cx} cy={cy} r={glowRadius} color={globeColors.glow} opacity={glowOpacity}>
-              <BlurMask blur={baseRadius * 0.12} style="outer" />
+            {/* Soft spotlight behind the globe */}
+            <Rect x={0} y={0} width={width} height={height}>
+              <RadialGradient
+                c={centre}
+                r={backdropRadius}
+                colors={[globeStyle.backdrop.inner, globeStyle.backdrop.mid, TRANSPARENT]}
+                positions={[0, 0.5, 1]}
+              />
+            </Rect>
+
+            {/* Atmosphere ring just outside the sphere (a gradient: no blur, so it's cheap) */}
+            <Circle cx={cx} cy={cy} r={haloRadius} opacity={glowOpacity}>
+              <RadialGradient
+                c={centre}
+                r={haloRadius}
+                colors={[
+                  globeStyle.halo.color,
+                  globeStyle.halo.color,
+                  globeStyle.halo.faint,
+                  TRANSPARENT,
+                ]}
+                positions={HALO_STOPS}
+              />
             </Circle>
 
             {/* Ocean, lit from the top-left */}
@@ -400,32 +520,58 @@ export function Globe({ width, height, zoom, visitedIds, onToggleVisited }: Prop
               <RadialGradient
                 c={highlight}
                 r={oceanGradientRadius}
-                colors={[globeColors.oceanLight, globeColors.ocean, globeColors.oceanDeep]}
+                colors={[globeStyle.ocean.light, globeStyle.ocean.mid, globeStyle.ocean.deep]}
+                positions={[0, 0.45, 1]}
               />
             </Circle>
 
-            {/* Land: every country grey, visited ones green on top, and the one being toggled fading */}
-            <Path
-              path={landPath}
-              color={globeColors.land}
-              fillType="evenOdd"
-              transform={LAND_PATH_TRANSFORM}
-            />
-            <Path
-              path={visitedPath}
-              color={globeColors.visited}
-              fillType="evenOdd"
-              transform={LAND_PATH_TRANSFORM}
-            />
-            <Path
-              path={fadePath}
-              color={fadeColor}
-              fillType="evenOdd"
-              transform={LAND_PATH_TRANSFORM}
-            />
+            {/* Land tops (grey, green, and the country being toggled) drawn into one layer.
+                The layer's filter adds, beneath them, the darker sides (shifted copies)
+                and the shallow-water glow, so the land is only drawn once. */}
+            <Group clip={sphereClip}>
+              <Group layer={landLayer}>
+                <Path path={landPath} fillType="evenOdd" transform={LAND_PATH_TRANSFORM}>
+                  <LinearGradient
+                    start={landGradientStart}
+                    end={landGradientEnd}
+                    colors={[globeStyle.land.top, globeStyle.land.bottom]}
+                  />
+                </Path>
+                <Path
+                  path={visitedPath}
+                  color={globeColors.visited}
+                  fillType="evenOdd"
+                  transform={LAND_PATH_TRANSFORM}
+                />
+                <Path
+                  path={fadePath}
+                  color={fadeColor}
+                  fillType="evenOdd"
+                  transform={LAND_PATH_TRANSFORM}
+                />
+              </Group>
+            </Group>
+
+            {/* Borders and lit edges: grey everywhere, then green over visited countries */}
             <Path
               path={landPath}
               color={globeColors.landBorder}
+              style="stroke"
+              strokeWidth={0.6 * PATH_SCALE}
+              strokeJoin="round"
+              transform={LAND_PATH_TRANSFORM}
+            />
+            <Path
+              path={landPath}
+              color={globeStyle.outlineHighlight.color}
+              style="stroke"
+              strokeWidth={globeStyle.outlineHighlight.width * PATH_SCALE}
+              strokeJoin="round"
+              transform={HIGHLIGHT_TRANSFORM}
+            />
+            <Path
+              path={visitedPath}
+              color={globeColors.visitedBorder}
               style="stroke"
               strokeWidth={0.6 * PATH_SCALE}
               strokeJoin="round"
@@ -457,24 +603,43 @@ export function Globe({ width, height, zoom, visitedIds, onToggleVisited }: Prop
               transform={LAND_PATH_TRANSFORM}
             />
 
-            {/* Sphere shading: soft highlight, darker limb */}
+            {/* Lighting over everything: light top-left to shade bottom-right */}
             <Circle cx={cx} cy={cy} r={radius}>
-              <RadialGradient
-                c={highlight}
-                r={shadingGradientRadius}
-                colors={['rgba(255,255,255,0.12)', 'rgba(0,0,0,0)', 'rgba(0,8,40,0.5)']}
-                positions={[0, 0.45, 1]}
+              <LinearGradient
+                start={shadeStart}
+                end={shadeEnd}
+                colors={[globeStyle.lighting.lit, TRANSPARENT, globeStyle.lighting.shade]}
               />
             </Circle>
 
-            {/* Electric-blue rim */}
+            {/* Rim shadow: a soft dark crescent along the bottom-right edge */}
+            <Circle cx={cx} cy={cy} r={radius}>
+              <RadialGradient
+                c={rimShadowCentre}
+                r={rimGradientRadius}
+                colors={[TRANSPARENT, TRANSPARENT, globeStyle.lighting.rimShadow]}
+                positions={[0, 1 - globeStyle.lighting.rimShadowWidth / RIM_REACH, 1]}
+              />
+            </Circle>
+
+            {/* Rim light: a bright crescent along the top-left edge */}
+            <Circle cx={cx} cy={cy} r={radius}>
+              <RadialGradient
+                c={rimLightCentre}
+                r={rimGradientRadius}
+                colors={[TRANSPARENT, TRANSPARENT, globeStyle.lighting.rimLight]}
+                positions={[0, 1 - globeStyle.lighting.rimLightWidth / RIM_REACH, 1]}
+              />
+            </Circle>
+
+            {/* Thin soft rim */}
             <Circle
               cx={cx}
               cy={cy}
               r={radius}
-              color={globeColors.rim}
+              color={globeStyle.rim}
               style="stroke"
-              strokeWidth={1.5}
+              strokeWidth={1}
             />
           </Canvas>
         </View>
@@ -508,7 +673,7 @@ function PerfReadout({ buildMs, zoom }: PerfReadoutProps) {
   useEffect(() => {
     const id = setInterval(() => {
       setText(
-        `${Math.round(fps.get())} fps · path ${buildMs.get().toFixed(1)} ms · ${zoom.get().toFixed(1)}×`,
+        `${BUILD_LABEL} · ${Math.round(fps.get())} fps · path ${buildMs.get().toFixed(1)} ms · ${zoom.get().toFixed(1)}×`,
       );
     }, 500);
     return () => clearInterval(id);

@@ -105,3 +105,75 @@ realistic numbers run `npx expo start --no-dev --minify`.
 - Polygon holes are drawn with even-odd fill.
 - Low-detail geometry: tiny islands and microstates may be missing or very small. This
   matters for tapping in milestone 3.
+## Visual polish
+
+All colours, sizes and effect strengths live in `globeStyle` in `src/theme/index.ts`
+(shared with the future map view).
+
+**Checking a look without a phone:** the same Skia tree can be rendered headlessly in
+Node with `@shopify/react-native-skia/lib/commonjs/headless` and `canvaskit-wasm`
+(the real Skia engine), then viewed as a PNG.
+
+**No adaptive quality:** every effect is always drawn, moving or not, so what you see
+while spinning is what you see at rest.
+
+### What's drawn, bottom to top
+
+Light comes from the top-left of the screen.
+
+| Layer | How | Cost per frame |
+| --- | --- | --- |
+| Backdrop spotlight, atmosphere halo, ocean | Radial gradients | ~3 gradient fills |
+| **Land layer** | Grey tops (top-to-bottom gradient), green visited tops and the fading country, drawn into one layer. The layer's image filter adds, underneath: two blurred tinted copies (shallow-water glow) and `slab.steps` darkened copies shifted down-right (the raised sides). Clipped to the sphere | 3 path fills + GPU filter passes (no extra path work) |
+| Borders, lit edges | Land path stroked; again 1 px up-left in faint white; visited border in green | 3 strokes |
+| Shading, rim shadow, rim light, rim line | Gradients over the sphere | ~4 gradient fills |
+
+**Sides are darkened copies of the tops**, so grey land gets a dark grey side and green
+land a dark green one (`slab.shade`). Because the tops are drawn last in the layer, the
+sides only show over the sea; they never cover a neighbouring country.
+
+**Land texture was tried three ways and dropped.** A noise overlay is in screen space
+(it stays put while the land slides under it, like a dirty screen). Hand-drawn marks
+(hills, mountains, waves) stamped with a Skia `Atlas` at fixed lat/lon points did stick
+to the globe, but looked poor at this size. Keeping them in step with the land meant
+handing ~500 transforms to Skia every frame, which dropped fps into the 20s. Lessons
+kept for any future attempt:
+- `useRSXformBuffer`'s mapper declares no outputs, so Reanimated can run Skia's redraw
+  before it and the stamps lag the land by a frame.
+- A zero-size atlas transform makes Skia stop drawing every sprite after it.
+
+**Paths are parsed once per frame.** The projection builds SVG strings; each is turned
+into an `SkPath` in its derived value and shared by every layer that draws it. Passing a
+string to `<Path>` makes Skia's native recorder re-parse it for each layer every frame.
+
+**Why the earlier version was slow when partly zoomed in:** every side copy and the two
+wide shallow-water strokes were separate path draws, and Skia re-triangulates a path
+each time it's drawn. With the detailed outlines on screen that was ~15 large path draws
+per frame. The layer filter replaces them with image passes on the GPU.
+
+Making visited countries taller was tried twice (deeper sides spilled over neighbours;
+lifted tops looked janky) and dropped.
+
+## Flat map
+
+The map button on the Visited screen switches to a flat world map
+(`src/components/map/WorldMap.tsx`). Both views stay mounted and stacked, so each keeps
+its position; the hidden one is transparent and ignores touches (an idle Skia canvas
+doesn't redraw, so it costs little). Don't hide a Skia canvas with `display: 'none'`: it
+loses its drawing and comes back blank, because nothing triggers a redraw.
+
+| Concern | Choice |
+| --- | --- |
+| Projection | d3-geo Natural Earth (`src/globe/flatMap.ts`), the rounded atlas-style world map. Antarctica stays a sensible size |
+| Outlines | Built once on the JS thread with `geoPath` and parsed into Skia paths once. Moving and zooming only change one transform, so nothing is rebuilt per frame |
+| Look | Same theme and land layer as the globe (`landLayer.ts`): raised sides, shallow-water glow, borders, lit edges, green visited countries. Map-only colours are in `globeStyle.map` |
+| View | Zoom 1 = whole world fits the width (`MAP_ZOOM` 1–12); it opens zoomed to fill the height. The view is the map point at the screen's middle, clamped so the map always covers the screen |
+| Gestures | Drag with momentum, pinch about the fingers, tap to select (slides the country to the middle) |
+| Tapping | Screen → map units → `projection.invert` → lon/lat → the same `countryAt` as the globe, with map units per radian × zoom as the scale |
+
+The land layer's filter has to work in screen px, so inside the map transform the layer
+sits in a group that undoes the transform, and the land tops inside it re-apply it.
+Side copies grow with depth (at most 1.25 px apart) so deep sides don't look stepped.
+
+Not done yet: horizontal wrap-around (the map stops at ±180°), the mock current
+location, and activity markers.

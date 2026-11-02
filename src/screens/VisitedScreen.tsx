@@ -1,23 +1,32 @@
 import { useState } from 'react';
 import { StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
-import { useSharedValue } from 'react-native-reanimated';
+import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ChallengeBubble } from '@/components/challenge/ChallengeBubble';
 import { ChallengeSheet } from '@/components/challenge/ChallengeSheet';
 import { Globe } from '@/components/globe/Globe';
+import { WorldMap } from '@/components/map/WorldMap';
 import { MapControlButton } from '@/components/MapControlButton';
 import { VisitedCount } from '@/components/VisitedCount';
 import { demoUser, todaysChallenge } from '@/data/challenges';
-import { MIN_ZOOM, stepZoom } from '@/globe/zoom';
+import { MAP_ZOOM, MIN_ZOOM, stepZoom } from '@/globe/zoom';
 import { useVisitedCountries } from '@/state/visitedCountries';
 import { colors, spacing, typography } from '@/theme';
+
+type ViewMode = 'globe' | 'map';
+
+const HINTS: Record<ViewMode, string> = {
+  globe: 'Drag to spin · pinch to zoom · tap a country',
+  map: 'Drag to move · pinch to zoom · tap a country',
+};
 
 /**
  * Home / Visited tab.
  *
- * Current state: the globe rotates, zooms (pinch or +/-), and countries can be
- * tapped and marked visited. The globe/map mode and locate buttons do nothing yet.
+ * Shows the globe or the flat world map (toggled with the buttons bottom-left).
+ * Both zoom (pinch or +/-), and countries can be tapped and marked visited. The
+ * locate button does nothing yet.
  */
 export function VisitedScreen() {
   const insets = useSafeAreaInsets();
@@ -29,8 +38,26 @@ export function VisitedScreen() {
   const [bubbleExpanded, setBubbleExpanded] = useState(true);
   const [challengeOpen, setChallengeOpen] = useState(false);
   const [globeArea, setGlobeArea] = useState({ width: 0, height: 0 });
-  // Shared by pinch (inside Globe) and the zoom buttons below.
-  const zoom = useSharedValue(MIN_ZOOM);
+  const [mode, setMode] = useState<ViewMode>('globe');
+  // Each view's zoom is shared by its pinch gesture and the zoom buttons below.
+  const globeZoom = useSharedValue(MIN_ZOOM);
+  const mapZoom = useSharedValue(MAP_ZOOM.min);
+
+  // Both views stay mounted and stacked (so each keeps its position); the hidden
+  // one is transparent and ignores touches. It must stay laid out: hiding a Skia
+  // canvas with display: 'none' loses its drawing, and it comes back blank. The
+  // shown one fades in.
+  const fadeIn = useSharedValue(1);
+  const fadeInStyle = useAnimatedStyle(() => ({ opacity: fadeIn.get() }));
+  const showMode = (next: ViewMode) => {
+    if (next === mode) return;
+    setMode(next);
+    fadeIn.set(0);
+    fadeIn.set(withTiming(1, { duration: 250 }));
+  };
+
+  const zoomBy = (direction: 1 | -1) =>
+    mode === 'globe' ? stepZoom(globeZoom, direction) : stepZoom(mapZoom, direction, MAP_ZOOM);
 
   const onGlobeAreaLayout = (e: LayoutChangeEvent) => {
     const { width, height } = e.nativeEvent.layout;
@@ -53,34 +80,58 @@ export function VisitedScreen() {
 
       <View style={styles.globeArea} onLayout={onGlobeAreaLayout}>
         {globeArea.width > 0 && (
-          <Globe
-            width={globeArea.width}
-            height={globeArea.height}
-            zoom={zoom}
-            visitedIds={visitedIds}
-            onToggleVisited={toggleVisited}
-          />
+          <Animated.View
+            style={[{ width: globeArea.width, height: globeArea.height }, fadeInStyle]}>
+            <View
+              style={[StyleSheet.absoluteFill, mode !== 'globe' && styles.hidden]}
+              pointerEvents={mode === 'globe' ? 'auto' : 'none'}>
+              <Globe
+                width={globeArea.width}
+                height={globeArea.height}
+                zoom={globeZoom}
+                visitedIds={visitedIds}
+                onToggleVisited={toggleVisited}
+              />
+            </View>
+            <View
+              style={[StyleSheet.absoluteFill, mode !== 'map' && styles.hidden]}
+              pointerEvents={mode === 'map' ? 'auto' : 'none'}>
+              <WorldMap
+                width={globeArea.width}
+                height={globeArea.height}
+                zoom={mapZoom}
+                visitedIds={visitedIds}
+                onToggleVisited={toggleVisited}
+              />
+            </View>
+          </Animated.View>
         )}
       </View>
 
-      <Text style={styles.previewNote}>Drag to spin · pinch to zoom · tap a country</Text>
+      <Text style={styles.previewNote}>{HINTS[mode]}</Text>
 
       <View style={styles.controlsRow}>
         <View style={styles.controlGroup}>
-          <MapControlButton icon="globe-outline" accessibilityLabel="Globe view" active />
-          <MapControlButton icon="map-outline" accessibilityLabel="Terrain map view" />
+          <MapControlButton
+            icon="globe-outline"
+            accessibilityLabel="Globe view"
+            active={mode === 'globe'}
+            onPress={() => showMode('globe')}
+          />
+          <MapControlButton
+            icon="map-outline"
+            accessibilityLabel="Flat map view"
+            active={mode === 'map'}
+            onPress={() => showMode('map')}
+          />
         </View>
         <View style={styles.controlGroup}>
           <MapControlButton
             icon="remove"
             accessibilityLabel="Zoom out"
-            onPress={() => stepZoom(zoom, -1)}
+            onPress={() => zoomBy(-1)}
           />
-          <MapControlButton
-            icon="add"
-            accessibilityLabel="Zoom in"
-            onPress={() => stepZoom(zoom, 1)}
-          />
+          <MapControlButton icon="add" accessibilityLabel="Zoom in" onPress={() => zoomBy(1)} />
           <MapControlButton icon="navigate-outline" accessibilityLabel="Centre on current area" />
         </View>
       </View>
@@ -112,6 +163,9 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  hidden: {
+    opacity: 0,
   },
   previewNote: {
     ...typography.caption,

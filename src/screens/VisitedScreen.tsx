@@ -6,13 +6,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ChallengeBubble } from '@/components/challenge/ChallengeBubble';
 import { ChallengeSheet } from '@/components/challenge/ChallengeSheet';
 import { Globe } from '@/components/globe/Globe';
+import { useGlobeTextures } from '@/components/globe/globeTextures';
 import { WorldMap } from '@/components/map/WorldMap';
 import { MapControlButton } from '@/components/MapControlButton';
 import { VisitedCount } from '@/components/VisitedCount';
 import { demoUser, todaysChallenge } from '@/data/challenges';
 import { MAP_ZOOM, MIN_ZOOM, stepZoom } from '@/globe/zoom';
 import { useVisitedCountries } from '@/state/visitedCountries';
-import { colors, spacing, typography } from '@/theme';
+import { colors, GLOBE_MAPPING_TEST, GLOBE_RENDERER, spacing, typography } from '@/theme';
 
 type ViewMode = 'globe' | 'map';
 
@@ -42,6 +43,8 @@ export function VisitedScreen() {
   // Each view's zoom is shared by its pinch gesture and the zoom buttons below.
   const globeZoom = useSharedValue(MIN_ZOOM);
   const mapZoom = useSharedValue(MAP_ZOOM.min);
+  // The globe and map textures, loaded once and shared by both views.
+  const textures = useGlobeTextures(GLOBE_RENDERER === 'texture' && !GLOBE_MAPPING_TEST);
 
   // Both views stay mounted and stacked (so each keeps its position); the hidden
   // one is transparent and ignores touches. It must stay laid out: hiding a Skia
@@ -66,18 +69,6 @@ export function VisitedScreen() {
 
   return (
     <View style={[styles.container, { paddingBottom: insets.bottom + spacing.sm }]}>
-      <View style={styles.topRow}>
-        <VisitedCount count={visitedIds.size} />
-        <ChallengeBubble
-          firstName={demoUser.firstName}
-          challenge={todaysChallenge}
-          expanded={bubbleExpanded}
-          onOpenChallenge={() => setChallengeOpen(true)}
-          onCollapse={() => setBubbleExpanded(false)}
-          onExpand={() => setBubbleExpanded(true)}
-        />
-      </View>
-
       <View style={styles.globeArea} onLayout={onGlobeAreaLayout}>
         {globeArea.width > 0 && (
           <Animated.View
@@ -91,6 +82,7 @@ export function VisitedScreen() {
                 zoom={globeZoom}
                 visitedIds={visitedIds}
                 onToggleVisited={toggleVisited}
+                textures={textures}
               />
             </View>
             <View
@@ -102,10 +94,23 @@ export function VisitedScreen() {
                 zoom={mapZoom}
                 visitedIds={visitedIds}
                 onToggleVisited={toggleVisited}
+                textures={textures}
               />
             </View>
           </Animated.View>
         )}
+      </View>
+
+      <View style={styles.topRow}>
+        <VisitedCount count={visitedIds.size} />
+        <ChallengeBubble
+          firstName={demoUser.firstName}
+          challenge={todaysChallenge}
+          expanded={bubbleExpanded}
+          onOpenChallenge={() => setChallengeOpen(true)}
+          onCollapse={() => setBubbleExpanded(false)}
+          onExpand={() => setBubbleExpanded(true)}
+        />
       </View>
 
       <Text style={styles.previewNote}>{HINTS[mode]}</Text>
@@ -150,17 +155,23 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: spacing.lg,
   },
+  // Floats over the top of the globe area, so expanding or collapsing the speech
+  // bubble never resizes the globe (resizing its canvas made it glitch).
   topRow: {
+    position: 'absolute',
+    top: 0,
+    left: spacing.lg,
+    right: spacing.lg,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
     gap: spacing.md,
-    // Lets the mascot badge hang over the globe area's empty corner.
-    zIndex: 1,
-    marginBottom: -spacing.xxl,
   },
+  // Runs edge to edge (past the screen's side padding), so a zoomed-in globe or map
+  // fills the width.
   globeArea: {
     flex: 1,
+    marginHorizontal: -spacing.lg,
     alignItems: 'center',
     justifyContent: 'center',
   },

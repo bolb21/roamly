@@ -1,4 +1,15 @@
-import { BlurMask, Canvas, Group, LinearGradient, Path, Skia } from '@shopify/react-native-skia';
+import {
+  BlurMask,
+  Canvas,
+  Group,
+  LinearGradient,
+  Path,
+  Rect,
+  Shader,
+  Skia,
+  type SkPath,
+} from '@shopify/react-native-skia';
+import * as Haptics from 'expo-haptics';
 import { useEffect, useState } from 'react';
 import { View } from 'react-native';
 import {
@@ -16,27 +27,44 @@ import {
   useSharedValue,
   withDecay,
   withTiming,
+  type DerivedValue,
   type SharedValue,
 } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
 
 import { CountryBubble, type BubbleAnchor } from '@/components/globe/CountryBubble';
+import { getMapEffect } from '@/components/globe/globeShader';
+import {
+  LAND_UNIFORMS,
+  useTextureSet,
+  useVisitedPalette,
+  type GlobeTextures,
+} from '@/components/globe/globeTextures';
 import { makeLandLayerPaint } from '@/components/globe/landLayer';
-import { getFlatMapData } from '@/globe/flatMap';
+import { GlowDot, LandTextures, SMALL_COUNTRIES } from '@/components/globe/TextureGlobeLayers';
+import { getFlatMapBorderPath, getFlatMapData } from '@/globe/flatMap';
 import { getGlobeData } from '@/globe/globeData';
 import { countryAt } from '@/globe/hitTest';
 import { MAP_ZOOM, zoomLimitHaptic } from '@/globe/zoom';
-import { globeColors, globeStyle } from '@/theme';
+import {
+  DEBUG_ALL_VISITED,
+  GLOBE_RENDERER,
+  globeColors,
+  globeStyle,
+  textureGlobeStyle,
+} from '@/theme';
 
 type Props = {
   /** Size of the canvas, in px. */
   width: number;
   height: number;
-  /** Shared with the zoom buttons. 1 = whole world fits the width (see MAP_ZOOM). */
+  /** Shared with the zoom buttons. 1 = the whole map fits the width (see MAP_ZOOM). */
   zoom: SharedValue<number>;
-  /** ISO numeric ids of visited countries, drawn green. */
+  /** ISO numeric ids of visited countries, drawn in their visited colour. */
   visitedIds: ReadonlySet<string>;
   onToggleVisited: (countryId: string) => void;
+  /** Textures for the textured map (loaded once by the screen, shared with the globe). */
+  textures: GlobeTextures;
 };
 
 /** Momentum friction for withDecay (closer to 1 = longer glide). */
@@ -51,23 +79,40 @@ const VISITED_FADE_MS = 500;
  */
 const REFERENCE_PX_PER_RADIAN = 150;
 const NO_COUNTRY = -1;
+/** Border line copies one map-width west and east, so the wrap-around joins up. */
+const WRAP_COPIES = [-1, 0, 1];
+/** The detailed border lines are built this long after the map first appears. */
+const BORDER_LINES_DELAY_MS = 1800;
 
 const EMPTY_PATH = Skia.Path.Make();
 const pathFrom = (svg: string) =>
   svg ? (Skia.Path.MakeFromSVGString(svg) ?? EMPTY_PATH) : EMPTY_PATH;
 
 /**
- * Flat world map with the same look as the globe: raised land, visited countries
- * in green, tap to select and mark visited. Drag to move, pinch to zoom.
+ * Flat world map with the same land as the textured globe (relief, borders, visited
+ * colours, selection glow) and no sea. Tap to select and mark visited; drag to move,
+ * pinch to zoom.
  *
- * Every outline is built once (see src/globe/flatMap.ts); moving and zooming only
- * changes one transform, so it stays smooth at any zoom.
+ * The textured map is one shader over the canvas (see MAP in globeShader.ts); the
+ * vector outlines (src/globe/flatMap.ts) are its fallback. Moving and zooming only
+ * change the view, so it stays smooth at any zoom.
  */
-export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited }: Props) {
+export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited, textures }: Props) {
   const { countries } = getGlobeData();
   const map = getFlatMapData(countries);
-  // Screen px per map unit at zoom 1 (the whole world fits the width).
+  // Screen px per map unit at zoom 1 (the whole map fits the width).
   const fit = width / map.width;
+
+  // Open zoomed in so the map fills the height (the whole map is a pinch away).
+  useEffect(() => {
+    const fillHeight = height / (map.height * fit);
+    if (zoom.get() < fillHeight) zoom.set(Math.min(fillHeight, MAP_ZOOM.max));
+  }, [fit, height, map.height, zoom]);
+
+  const textureSet = useTextureSet(textures, zoom, textureGlobeStyle.mapHiResZoom);
+  const mapEffect =
+    GLOBE_RENDERER === 'texture' && !textures.failed && textureSet ? getMapEffect() : null;
+  const { colors, colorValues, palette, isVisited } = useVisitedPalette(countries, visitedIds);
 
   const [staticPaths] = useState(() => ({
     land: pathFrom(map.landPath),
@@ -79,24 +124,31 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited }: P
   const centreX = useSharedValue(map.width / 2);
   const centreY = useSharedValue(map.height / 2);
 
-  // Start zoomed so the map fills the height (the whole world is still a pinch away).
-  useEffect(() => {
-    const fillHeight = height / (map.height * fit);
-    if (zoom.get() < fillHeight) zoom.set(Math.min(fillHeight, MAP_ZOOM.max));
-  }, [fit, height, map.height, zoom]);
-
-  /** Keeps the map covering the screen (or centred, when it's smaller than the screen). */
+  /** Keeps the map covering the screen top to bottom (or centred, when it's shorter). */
   const clampCentre = (value: number, scale: number, viewSize: number, mapSize: number) => {
     'worklet';
     const half = viewSize / (2 * scale);
     if (half * 2 >= mapSize) return mapSize / 2;
     return Math.min(mapSize - half, Math.max(half, value));
   };
+  /**
+   * The map wraps round east–west (it repeats every map.width), so the x of the
+   * middle of the screen is kept in 0…map.width.
+   */
+  const wrapX = (value: number) => {
+    'worklet';
+    return ((value % map.width) + map.width) % map.width;
+  };
+  /** The copy of map x-position `x` nearest the map point at the middle of the screen. */
+  const nearestCopy = (x: number, centre: number) => {
+    'worklet';
+    return x + map.width * Math.round((centre - x) / map.width);
+  };
 
   // Screen = (map point - centre) × scale + middle of the screen.
   const view = useDerivedValue(() => {
     const scale = fit * zoom.get();
-    const x = clampCentre(centreX.get(), scale, width, map.width);
+    const x = wrapX(centreX.get());
     const y = clampCentre(centreY.get(), scale, height, map.height);
     return { scale, x, y, tx: width / 2 - x * scale, ty: height / 2 - y * scale };
   });
@@ -139,6 +191,7 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited }: P
   const selectedIndex = useSharedValue(NO_COUNTRY);
   // The country fading between grey and green is drawn on its own.
   const [fadeIndex, setFadeIndex] = useState<number | null>(null);
+  const fadeIndexShared = useSharedValue(NO_COUNTRY);
   const fadeProgress = useSharedValue(0);
   const fadeColor = useDerivedValue(() =>
     interpolateColor(fadeProgress.get(), [0, 1], [globeColors.land, globeColors.visited]),
@@ -156,18 +209,29 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited }: P
     setSelected(index);
     selectedIndex.set(index ?? NO_COUNTRY);
     if (index === null) return;
-    // Slide the country to the middle (the view keeps the map covering the screen).
-    centreX.set(withTiming(map.anchors[index * 2], CENTRE_TIMING));
+    // Slide the country to the middle (the nearest copy of it, as the map wraps round;
+    // the view keeps the map covering the screen top to bottom).
+    const fromX = view.get().x;
+    centreX.set(fromX);
+    centreX.set(withTiming(nearestCopy(map.anchors[index * 2], fromX), CENTRE_TIMING));
     centreY.set(withTiming(map.anchors[index * 2 + 1], CENTRE_TIMING));
   };
 
   const handleTap = (x: number, y: number, scale: number) => {
-    const lonLat = map.invert(x, y);
+    const lonLat = map.invert(((x % map.width) + map.width) % map.width, y);
     if (!lonLat) {
       selectCountry(null);
       return;
     }
-    selectCountry(countryAt(countries, lonLat[0], lonLat[1], map.unitsPerRadian * scale));
+    selectCountry(
+      countryAt(
+        countries,
+        lonLat[0],
+        lonLat[1],
+        map.unitsPerRadian * scale,
+        textures.countryLookup,
+      ),
+    );
   };
 
   const toggleSelectedVisited = () => {
@@ -175,17 +239,54 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited }: P
     const id = countries[selected].id;
     const nowVisited = !visitedIds.has(id);
     setFadeIndex(selected);
+    fadeIndexShared.set(selected);
     fadeProgress.set(nowVisited ? 0 : 1);
     fadeProgress.set(withTiming(nowVisited ? 1 : 0, { duration: VISITED_FADE_MS }));
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     onToggleVisited(id);
   };
+
+  // The textured map's shader inputs: the view, the map's shape, and the land look.
+  const mapUniforms = useDerivedValue(() => {
+    const v = view.get();
+    const fading = fadeIndexShared.get();
+    return {
+      ...LAND_UNIFORMS,
+      viewScale: v.scale,
+      viewOffset: [v.tx, v.ty],
+      mapWidth: map.width,
+      mapHeight: map.height,
+      mercatorScale: map.unitsPerRadian,
+      mercatorTop: map.mercatorTop,
+      brightness: textureGlobeStyle.mapBrightness,
+      borderStrength: 0, // drawn as vector lines instead (below)
+      fadeId: fading + 1,
+      fadeAmount: DEBUG_ALL_VISITED ? 1 : fadeProgress.get(),
+      fadeColor: fading >= 0 ? colorValues[fading] : [0, 0, 0, 0],
+      selectedId: selectedIndex.get() + 1,
+    };
+  });
+  const smallVisited = SMALL_COUNTRIES.filter((i) => isVisited[i]);
+
+  // The detailed border lines, built (once) shortly after the map first appears.
+  const [borderPath, setBorderPath] = useState<SkPath | null>(null);
+  useEffect(() => {
+    const id = setTimeout(
+      () => setBorderPath(pathFrom(getFlatMapBorderPath())),
+      BORDER_LINES_DELAY_MS,
+    );
+    return () => clearTimeout(id);
+  }, []);
+  const borderLineWidth = useDerivedValue(
+    () => textureGlobeStyle.borders.lines.width / view.get().scale,
+  );
 
   // Screen position of the selected country's anchor, for the name bubble.
   const bubbleAnchor = useDerivedValue<BubbleAnchor>(() => {
     const sel = selectedIndex.get();
     if (sel === NO_COUNTRY) return { x: 0, y: 0, visible: false };
     const v = view.get();
-    const x = v.tx + map.anchors[sel * 2] * v.scale;
+    const x = v.tx + nearestCopy(map.anchors[sel * 2], v.x) * v.scale;
     const y = v.ty + map.anchors[sel * 2 + 1] * v.scale;
     return { x, y, visible: x >= 0 && x <= width && y >= 0 && y <= height };
   });
@@ -209,23 +310,15 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited }: P
     onUpdate: (e) => {
       'worklet';
       const scale = fit * zoom.get();
-      centreX.set(clampCentre(centreX.get() - e.changeX / scale, scale, width, map.width));
+      centreX.set(wrapX(centreX.get() - e.changeX / scale));
       centreY.set(clampCentre(centreY.get() - e.changeY / scale, scale, height, map.height));
     },
     onDeactivate: (e) => {
       'worklet';
       const scale = fit * zoom.get();
-      const halfW = width / (2 * scale);
       const halfH = height / (2 * scale);
-      if (halfW * 2 < map.width) {
-        centreX.set(
-          withDecay({
-            velocity: -e.velocityX / scale,
-            deceleration: DECELERATION,
-            clamp: [halfW, map.width - halfW],
-          }),
-        );
-      }
+      // No east–west limit: the map wraps round (the view wraps the value).
+      centreX.set(withDecay({ velocity: -e.velocityX / scale, deceleration: DECELERATION }));
       if (halfH * 2 < map.height) {
         centreY.set(
           withDecay({
@@ -259,13 +352,12 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited }: P
       // Keep the map point between the fingers in place. Read the live values (not
       // `view`, which may not include a pan applied earlier this frame).
       const before = fit * zoom.get();
-      const focusX =
-        clampCentre(centreX.get(), before, width, map.width) + (e.focalX - width / 2) / before;
+      const focusX = wrapX(centreX.get()) + (e.focalX - width / 2) / before;
       const focusY =
         clampCentre(centreY.get(), before, height, map.height) + (e.focalY - height / 2) / before;
       const scale = fit * nextZoom;
       zoom.set(nextZoom);
-      centreX.set(clampCentre(focusX - (e.focalX - width / 2) / scale, scale, width, map.width));
+      centreX.set(wrapX(focusX - (e.focalX - width / 2) / scale));
       centreY.set(clampCentre(focusY - (e.focalY - height / 2) / scale, scale, height, map.height));
     },
     onDeactivate: () => {
@@ -304,95 +396,136 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited }: P
       <GestureDetector gesture={gesture}>
         <View>
           <Canvas style={{ width, height }}>
-            <Group transform={mapTransform}>
-              {/* Ocean: the map's rounded outline, lighter at the top */}
-              <Path path={staticPaths.outline}>
-                <LinearGradient
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 0, y: map.height }}
-                  colors={[globeStyle.map.ocean.top, globeStyle.map.ocean.bottom]}
-                />
-              </Path>
-              <Path
-                path={staticPaths.graticule}
-                color={globeStyle.map.graticule}
-                style="stroke"
-                strokeWidth={hairline}
-              />
-
-              {/* Land tops in one layer; its filter adds the sides and shallow-water
-                  glow in screen px (see landLayer.ts). Clipped to the map's edge. */}
-              <Group clip={staticPaths.outline}>
-                <Group transform={screenTransform} layer={landLayer}>
+            {mapEffect && palette && textureSet ? (
+              <>
+                {/* Textured land, drawn per pixel over the whole canvas (no sea) */}
+                <Rect x={0} y={0} width={width} height={height}>
+                  <Shader source={mapEffect} uniforms={mapUniforms}>
+                    <LandTextures textures={textureSet} palette={palette} />
+                  </Shader>
+                </Rect>
+                {/* Thin white borders from the detailed outlines, one copy each side so
+                    the wrap-around joins up (off-screen copies cost almost nothing). */}
+                {borderPath && (
                   <Group transform={mapTransform}>
-                    <Path path={staticPaths.land} fillType="evenOdd">
-                      <LinearGradient
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 0, y: map.height }}
-                        colors={[globeStyle.land.top, globeStyle.land.bottom]}
-                      />
-                    </Path>
-                    <Path path={visitedPath} color={globeColors.visited} fillType="evenOdd" />
-                    <Path path={fadePath} color={fadeColor} fillType="evenOdd" />
+                    {WRAP_COPIES.map((copy) => (
+                      <Group key={copy} transform={[{ translateX: copy * map.width }]}>
+                        <Path
+                          path={borderPath}
+                          color={textureGlobeStyle.borders.lines.color}
+                          style="stroke"
+                          strokeWidth={borderLineWidth}
+                          strokeJoin="round"
+                          strokeCap="round"
+                        />
+                      </Group>
+                    ))}
                   </Group>
+                )}
+                {smallVisited.map((i) => (
+                  <MapDot
+                    key={i}
+                    x={map.anchors[i * 2]}
+                    y={map.anchors[i * 2 + 1]}
+                    mapWidth={map.width}
+                    color={colors[i]}
+                    view={view}
+                  />
+                ))}
+              </>
+            ) : (
+              <>
+                <Group transform={mapTransform}>
+                  {/* Ocean: the map's rounded outline, lighter at the top */}
+                  <Path path={staticPaths.outline}>
+                    <LinearGradient
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 0, y: map.height }}
+                      colors={[globeStyle.map.ocean.top, globeStyle.map.ocean.bottom]}
+                    />
+                  </Path>
+                  <Path
+                    path={staticPaths.graticule}
+                    color={globeStyle.map.graticule}
+                    style="stroke"
+                    strokeWidth={hairline}
+                  />
+
+                  {/* Land tops in one layer; its filter adds the sides and shallow-water
+                      glow in screen px (see landLayer.ts). Clipped to the map's edge. */}
+                  <Group clip={staticPaths.outline}>
+                    <Group transform={screenTransform} layer={landLayer}>
+                      <Group transform={mapTransform}>
+                        <Path path={staticPaths.land} fillType="evenOdd">
+                          <LinearGradient
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 0, y: map.height }}
+                            colors={[globeStyle.land.top, globeStyle.land.bottom]}
+                          />
+                        </Path>
+                        <Path path={visitedPath} color={globeColors.visited} fillType="evenOdd" />
+                        <Path path={fadePath} color={fadeColor} fillType="evenOdd" />
+                      </Group>
+                    </Group>
+                  </Group>
+
+                  {/* Borders: grey everywhere, then green over visited countries */}
+                  <Path
+                    path={staticPaths.land}
+                    color={globeColors.landBorder}
+                    style="stroke"
+                    strokeWidth={borderWidth}
+                    strokeJoin="round"
+                  />
+                  <Path
+                    path={visitedPath}
+                    color={globeColors.visitedBorder}
+                    style="stroke"
+                    strokeWidth={borderWidth}
+                    strokeJoin="round"
+                  />
                 </Group>
-              </Group>
 
-              {/* Borders: grey everywhere, then green over visited countries */}
-              <Path
-                path={staticPaths.land}
-                color={globeColors.landBorder}
-                style="stroke"
-                strokeWidth={borderWidth}
-                strokeJoin="round"
-              />
-              <Path
-                path={visitedPath}
-                color={globeColors.visitedBorder}
-                style="stroke"
-                strokeWidth={borderWidth}
-                strokeJoin="round"
-              />
-            </Group>
+                {/* Lit edge along every outline, 1 screen px up-left */}
+                <Group transform={highlightTransform}>
+                  <Path
+                    path={staticPaths.land}
+                    color={globeStyle.outlineHighlight.color}
+                    style="stroke"
+                    strokeWidth={highlightWidth}
+                    strokeJoin="round"
+                  />
+                </Group>
 
-            {/* Lit edge along every outline, 1 screen px up-left */}
-            <Group transform={highlightTransform}>
-              <Path
-                path={staticPaths.land}
-                color={globeStyle.outlineHighlight.color}
-                style="stroke"
-                strokeWidth={highlightWidth}
-                strokeJoin="round"
-              />
-            </Group>
+                <Group transform={mapTransform}>
+                  {/* Selected country: lightened, with a glowing outline */}
+                  <Path path={selectedPath} color={globeColors.selectedTint} fillType="evenOdd" />
+                  <Path
+                    path={selectedPath}
+                    color={globeColors.selectedGlow}
+                    style="stroke"
+                    strokeWidth={selectedGlowWidth}
+                    strokeJoin="round">
+                    <BlurMask blur={selectedGlowBlur} style="normal" />
+                  </Path>
+                  <Path
+                    path={selectedPath}
+                    color={globeColors.selectedOutline}
+                    style="stroke"
+                    strokeWidth={selectedOutlineWidth}
+                    strokeJoin="round"
+                  />
 
-            <Group transform={mapTransform}>
-              {/* Selected country: lightened, with a glowing outline */}
-              <Path path={selectedPath} color={globeColors.selectedTint} fillType="evenOdd" />
-              <Path
-                path={selectedPath}
-                color={globeColors.selectedGlow}
-                style="stroke"
-                strokeWidth={selectedGlowWidth}
-                strokeJoin="round">
-                <BlurMask blur={selectedGlowBlur} style="normal" />
-              </Path>
-              <Path
-                path={selectedPath}
-                color={globeColors.selectedOutline}
-                style="stroke"
-                strokeWidth={selectedOutlineWidth}
-                strokeJoin="round"
-              />
-
-              {/* The edge of the world */}
-              <Path
-                path={staticPaths.outline}
-                color={globeStyle.map.edge}
-                style="stroke"
-                strokeWidth={hairline}
-              />
-            </Group>
+                  {/* The edge of the world */}
+                  <Path
+                    path={staticPaths.outline}
+                    color={globeStyle.map.edge}
+                    style="stroke"
+                    strokeWidth={hairline}
+                  />
+                </Group>
+              </>
+            )}
           </Canvas>
         </View>
       </GestureDetector>
@@ -404,4 +537,25 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited }: P
       />
     </View>
   );
+}
+
+type MapDotProps = {
+  /** Position in map units. */
+  x: number;
+  y: number;
+  /** The map's width, in map units (it repeats east–west every mapWidth). */
+  mapWidth: number;
+  color: string;
+  view: DerivedValue<{ scale: number; x: number; y: number; tx: number; ty: number }>;
+};
+
+/** Glowing dot on a visited country too small to see in the texture. */
+function MapDot({ x, y, mapWidth, color, view }: MapDotProps) {
+  const centre = useDerivedValue(() => {
+    const v = view.get();
+    // The copy of the dot nearest the middle of the screen (the map wraps round).
+    const nearest = x + mapWidth * Math.round((v.x - x) / mapWidth);
+    return { x: v.tx + nearest * v.scale, y: v.ty + y * v.scale };
+  });
+  return <GlowDot centre={centre} color={color} />;
 }

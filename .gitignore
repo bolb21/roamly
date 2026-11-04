@@ -41,3 +41,6 @@ example
 # generated native folders
 /ios
 /android
+
+# raw downloads for scripts/build-globe-textures.mjs (large, not committed)
+data-raw/

@@ -6,7 +6,7 @@
 
 import { geoArea, geoCentroid, geoDistance } from 'd3-geo';
 import type { Feature, Geometry, MultiPolygon, Polygon, Position } from 'geojson';
-import { feature } from 'topojson-client';
+import { feature, mesh } from 'topojson-client';
 import { presimplify, quantile, simplify } from 'topojson-simplify';
 import type { GeometryCollection, Topology } from 'topojson-specification';
 
@@ -175,7 +175,11 @@ function densify(ring: number[][]): number[][] {
 
 function addRing(geo: GlobeGeometry, ring: number[][], countryIndex: number) {
   if (ring.length < 3) return;
+  addPoints(geo, ring, countryIndex);
+}
 
+/** Points making up one ring or line, with a bounding cap so they can be culled at once. */
+function addPoints(geo: GlobeGeometry, ring: number[][], countryIndex: number) {
   const start = geo.points.length / 3;
   let cx = 0;
   let cy = 0;
@@ -200,7 +204,10 @@ function addRing(geo: GlobeGeometry, ring: number[][], countryIndex: number) {
     cz /= len;
     let minDot = 1;
     for (let i = start * 3; i < geo.points.length; i += 3) {
-      minDot = Math.min(minDot, cx * geo.points[i] + cy * geo.points[i + 1] + cz * geo.points[i + 2]);
+      minDot = Math.min(
+        minDot,
+        cx * geo.points[i] + cy * geo.points[i + 1] + cz * geo.points[i + 2],
+      );
     }
     const radius = Math.acos(Math.max(-1, minDot)) + 0.01;
     if (radius < Math.PI / 2) sinRadius = Math.sin(radius);
@@ -211,4 +218,46 @@ function addRing(geo: GlobeGeometry, ring: number[][], countryIndex: number) {
   geo.ringCentres.push(cx, cy, cz);
   geo.ringSinRadius.push(sinRadius);
   geo.ringCountry.push(countryIndex);
+}
+
+/** Points per border line piece: short pieces mean only those near the screen are projected. */
+const LINE_PIECE_POINTS = 32;
+
+/**
+ * Country borders as lines (each shared border once, no coastlines), cut into short
+ * pieces so a zoomed-in view only projects the pieces near the screen. Drawn with
+ * buildGlobeLines (projection.ts). `ringCountry` is unused (0).
+ */
+export function buildBorderLines(topology: Topology): GlobeGeometry {
+  const object = topology.objects.countries as GeometryCollection;
+  const borders = mesh(topology, object, (a, b) => a !== b);
+  const geometry: GlobeGeometry = {
+    points: [],
+    ringStarts: [],
+    ringEnds: [],
+    ringCentres: [],
+    ringSinRadius: [],
+    ringCountry: [],
+  };
+  for (const line of borders.coordinates) {
+    let piece: number[][] = [];
+    const flush = () => {
+      if (piece.length >= 2) addPoints(geometry, piece, 0);
+    };
+    for (const point of line) {
+      const last = piece[piece.length - 1];
+      // A jump across the antimeridian: those points coincide on the sphere.
+      if (last && Math.abs(point[0] - last[0]) > 180) {
+        flush();
+        piece = [];
+      }
+      piece.push(point);
+      if (piece.length >= LINE_PIECE_POINTS) {
+        flush();
+        piece = [point]; // the next piece starts where this one ends
+      }
+    }
+    flush();
+  }
+  return geometry;
 }

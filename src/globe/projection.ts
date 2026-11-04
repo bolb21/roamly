@@ -174,3 +174,71 @@ export function buildGlobePath(
   // Nothing visible (e.g. zoomed in over open ocean): a valid path that draws nothing.
   return out.length > 0 ? out.join('') : 'M0 0';
 }
+
+/**
+ * Builds the SVG path for line pieces (from buildBorderLines): like buildGlobePath,
+ * but for open lines, which simply stop where they turn behind the globe.
+ */
+export function buildGlobeLines(
+  geo: GlobeGeometry,
+  rotation: number[],
+  cx: number,
+  cy: number,
+  r: number,
+  width: number,
+  height: number,
+): string {
+  'worklet';
+  const [m00, m01, m02, m10, m11, m12, m20, m21, m22] = rotation;
+  const pts = geo.points;
+  const out: string[] = [];
+  const ox = cx * PATH_SCALE;
+  const oy = cy * PATH_SCALE;
+  const rr = r * PATH_SCALE;
+  const maxX = width * PATH_SCALE;
+  const maxY = height * PATH_SCALE;
+
+  for (let ri = 0; ri < geo.ringStarts.length; ri++) {
+    // Skip pieces wholly behind the globe or off the canvas.
+    const c = ri * 3;
+    const ccx = geo.ringCentres[c];
+    const ccy = geo.ringCentres[c + 1];
+    const ccz = geo.ringCentres[c + 2];
+    const sinRadius = geo.ringSinRadius[ri];
+    if (m20 * ccx + m21 * ccy + m22 * ccz < -sinRadius) continue;
+    if (sinRadius <= 1) {
+      const reach = CAP_SCREEN_FACTOR * rr * sinRadius;
+      const px = ox + rr * (m00 * ccx + m01 * ccy + m02 * ccz);
+      const py = oy - rr * (m10 * ccx + m11 * ccy + m12 * ccz);
+      if (px + reach < 0 || px - reach > maxX || py + reach < 0 || py - reach > maxY) continue;
+    }
+
+    let penDown = false;
+    let lastX = 0;
+    let lastY = 0;
+    const end = geo.ringEnds[ri];
+    for (let k = geo.ringStarts[ri]; k < end; k++) {
+      const i = k * 3;
+      const X = pts[i];
+      const Y = pts[i + 1];
+      const Z = pts[i + 2];
+      if (m20 * X + m21 * Y + m22 * Z <= 0) {
+        penDown = false; // behind the globe
+        continue;
+      }
+      const px = Math.round(ox + rr * (m00 * X + m01 * Y + m02 * Z));
+      const py = Math.round(oy - rr * (m10 * X + m11 * Y + m12 * Z));
+      if (!penDown) {
+        out.push('M' + px + ' ' + py + 'l');
+        penDown = true;
+      } else if (Math.abs(px - lastX) + Math.abs(py - lastY) >= MIN_STEP || k === end - 1) {
+        out.push(px - lastX + ' ' + (py - lastY) + ' ');
+      } else {
+        continue;
+      }
+      lastX = px;
+      lastY = py;
+    }
+  }
+  return out.length > 0 ? out.join('') : 'M0 0';
+}

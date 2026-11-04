@@ -33,6 +33,7 @@ import {
   withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
+import * as Haptics from 'expo-haptics';
 import { scheduleOnRN } from 'react-native-worklets';
 
 import { getGlobeData } from '@/globe/globeData';
@@ -55,10 +56,19 @@ import {
   rubberBandZoom,
   zoomLimitHaptic,
 } from '@/globe/zoom';
-import { globeColors, globeStyle } from '@/theme';
+import {
+  GLOBE_MAPPING_TEST,
+  GLOBE_RENDERER,
+  globeColors,
+  globeStyle,
+  textureGlobeStyle,
+} from '@/theme';
 
 import { CountryBubble, type BubbleAnchor } from './CountryBubble';
+import { getEarthEffect, getMappingTestEffect } from './globeShader';
 import { makeLandLayerPaint } from './landLayer';
+import { useTextureSet, type GlobeTextures } from './globeTextures';
+import { Starfield, TextureGlobeLayers } from './TextureGlobeLayers';
 
 type Props = {
   /** Size of the canvas, in px. The globe is centred in it. */
@@ -69,6 +79,8 @@ type Props = {
   /** ISO numeric ids of visited countries, drawn green. */
   visitedIds: ReadonlySet<string>;
   onToggleVisited: (countryId: string) => void;
+  /** Textures for the textured renderer (loaded once by the screen, shared with the map). */
+  textures: GlobeTextures;
 };
 
 /** Starting view: centred over Europe/Africa, like the reference image. */
@@ -90,7 +102,7 @@ const GLOW_FADE_ZOOM = 1.6;
 /** Overlay with UI-thread fps and per-frame path build time. Set to false before demos. */
 const SHOW_PERF = true;
 /** Shown in the perf overlay, to confirm the phone is running the latest code. */
-const BUILD_LABEL = 'map v2';
+const BUILD_LABEL = 'borders v1';
 
 const TRANSPARENT = 'rgba(0,0,0,0)';
 /** Halo gradient stops: solid at the sphere's edge, fading out over the halo's width. */
@@ -124,10 +136,27 @@ const NO_COUNTRY = -1;
  * can't make rotation stutter. Working out which country was tapped runs on
  * the JS thread, once per tap.
  */
-export function Globe({ width, height, zoom, visitedIds, onToggleVisited }: Props) {
+export function Globe({ width, height, zoom, visitedIds, onToggleVisited, textures }: Props) {
   // Worklets may use the geometries and anchorPoints, but never `countries`:
   // it holds the full GeoJSON, which is too big to copy to the UI thread.
   const { simplified, detailed, countries, anchorPoints } = getGlobeData();
+  // The textured renderer's shader, or null to draw the vector globe: when the
+  // renderer is 'vector', if the shader fails to compile or a texture fails to load,
+  // and while the first texture is loading.
+  const wantTexture = GLOBE_RENDERER === 'texture';
+  const textureSet = useTextureSet(textures, zoom, textureGlobeStyle.hiResZoom);
+  const textureMode = GLOBE_MAPPING_TEST ? 'test' : 'earth';
+  const textureEffect =
+    !wantTexture || textures.failed
+      ? null
+      : GLOBE_MAPPING_TEST
+        ? getMappingTestEffect()
+        : textureSet
+          ? getEarthEffect()
+          : null;
+  // The vector outlines are only built while something draws them (the vector globe,
+  // or the mapping test's outlines), saving a few ms per frame on the textured globe.
+  const drawsVector = textureEffect === null || GLOBE_MAPPING_TEST;
 
   const cx = width / 2;
   const cy = height / 2;
@@ -142,6 +171,10 @@ export function Globe({ width, height, zoom, visitedIds, onToggleVisited }: Prop
   // surface keeps up with the finger at any zoom.
   const radius = useDerivedValue(() => baseRadius * zoom.get());
   const matrix = useDerivedValue(() => quatToMatrix(orientation.get()));
+  const vectorShown = useSharedValue(drawsVector);
+  useEffect(() => {
+    vectorShown.set(drawsVector);
+  }, [drawsVector, vectorShown]);
 
   // --- Selection (transient UI state) ---
   const [selected, setSelected] = useState<number | null>(null);
@@ -179,7 +212,7 @@ export function Globe({ width, height, zoom, visitedIds, onToggleVisited }: Prop
   };
 
   const handleTap = (lon: number, lat: number, radiusPx: number) => {
-    selectCountry(countryAt(countries, lon, lat, radiusPx));
+    selectCountry(countryAt(countries, lon, lat, radiusPx, textures.countryLookup));
   };
 
   // --- Visited colouring ---
@@ -200,6 +233,7 @@ export function Globe({ width, height, zoom, visitedIds, onToggleVisited }: Prop
     fadeIndex.set(selected);
     fadeProgress.set(nowVisited ? 0 : 1);
     fadeProgress.set(withTiming(nowVisited ? 1 : 0, { duration: VISITED_FADE_MS }));
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     onToggleVisited(id);
   };
 
@@ -227,6 +261,7 @@ export function Globe({ width, height, zoom, visitedIds, onToggleVisited }: Prop
   // Each is built as an SVG string and turned into a Skia path once, then shared by
   // every layer that draws it (a string would be re-parsed by each layer).
   const landPath = useDerivedValue(() => {
+    if (!vectorShown.get()) return toSkPath('M0 0');
     const t0 = performance.now();
     // Simplified outlines are plenty at full-globe size; switch to full detail when zoomed in.
     const geo = zoom.get() >= DETAIL_ZOOM ? detailed : simplified;
@@ -240,6 +275,7 @@ export function Globe({ width, height, zoom, visitedIds, onToggleVisited }: Prop
   });
 
   const visitedPath = useDerivedValue(() => {
+    if (!vectorShown.get()) return toSkPath('M0 0');
     const geo = zoom.get() >= DETAIL_ZOOM ? detailed : simplified;
     const mask = visitedMask.get();
     const fading = fadeIndex.get();
@@ -259,7 +295,7 @@ export function Globe({ width, height, zoom, visitedIds, onToggleVisited }: Prop
 
   const fadePath = useDerivedValue(() => {
     const fading = fadeIndex.get();
-    if (fading === NO_COUNTRY) return toSkPath('M0 0');
+    if (fading === NO_COUNTRY || !vectorShown.get()) return toSkPath('M0 0');
     const geo = zoom.get() >= DETAIL_ZOOM ? detailed : simplified;
     return toSkPath(
       buildGlobePath(geo, matrix.get(), cx, cy, radius.get(), width, height, (i) => i === fading),
@@ -291,7 +327,7 @@ export function Globe({ width, height, zoom, visitedIds, onToggleVisited }: Prop
 
   const selectedPath = useDerivedValue(() => {
     const sel = selectedIndex.get();
-    if (sel === NO_COUNTRY) return toSkPath('M0 0');
+    if (sel === NO_COUNTRY || !vectorShown.get()) return toSkPath('M0 0');
     const geo = zoom.get() >= DETAIL_ZOOM ? detailed : simplified;
     return toSkPath(
       buildGlobePath(geo, matrix.get(), cx, cy, radius.get(), width, height, (i) => i === sel),
@@ -490,6 +526,8 @@ export function Globe({ width, height, zoom, visitedIds, onToggleVisited }: Prop
       <GestureDetector gesture={gesture}>
         <View>
           <Canvas style={{ width, height }}>
+            {textureEffect && <Starfield width={width} height={height} />}
+
             {/* Soft spotlight behind the globe */}
             <Rect x={0} y={0} width={width} height={height}>
               <RadialGradient
@@ -515,132 +553,180 @@ export function Globe({ width, height, zoom, visitedIds, onToggleVisited }: Prop
               />
             </Circle>
 
-            {/* Ocean, lit from the top-left */}
-            <Circle cx={cx} cy={cy} r={radius}>
-              <RadialGradient
-                c={highlight}
-                r={oceanGradientRadius}
-                colors={[globeStyle.ocean.light, globeStyle.ocean.mid, globeStyle.ocean.deep]}
-                positions={[0, 0.45, 1]}
-              />
-            </Circle>
-
-            {/* Land tops (grey, green, and the country being toggled) drawn into one layer.
-                The layer's filter adds, beneath them, the darker sides (shifted copies)
-                and the shallow-water glow, so the land is only drawn once. */}
-            <Group clip={sphereClip}>
-              <Group layer={landLayer}>
-                <Path path={landPath} fillType="evenOdd" transform={LAND_PATH_TRANSFORM}>
-                  <LinearGradient
-                    start={landGradientStart}
-                    end={landGradientEnd}
-                    colors={[globeStyle.land.top, globeStyle.land.bottom]}
+            {textureEffect ? (
+              <>
+                {/* Textured globe: the sphere is drawn per pixel by a shader */}
+                <TextureGlobeLayers
+                  effect={textureEffect}
+                  mode={textureMode}
+                  textures={textureSet}
+                  warmUp={textures.high}
+                  clouds={textures.clouds}
+                  zoom={zoom}
+                  width={width}
+                  height={height}
+                  countries={countries}
+                  anchorPoints={anchorPoints}
+                  visitedIds={visitedIds}
+                  selectedIndex={selectedIndex}
+                  fadeIndex={fadeIndex}
+                  fadeProgress={fadeProgress}
+                  matrix={matrix}
+                  radius={radius}
+                  cx={cx}
+                  cy={cy}
+                />
+                {/* Mapping test: the app's country outlines, to check they line up */}
+                {GLOBE_MAPPING_TEST && (
+                  <Path
+                    path={landPath}
+                    color={textureGlobeStyle.test.outline}
+                    style="stroke"
+                    strokeWidth={1 * PATH_SCALE}
+                    strokeJoin="round"
+                    transform={LAND_PATH_TRANSFORM}
                   />
-                </Path>
+                )}
+              </>
+            ) : (
+              <>
+                {/* Ocean, lit from the top-left */}
+                <Circle cx={cx} cy={cy} r={radius}>
+                  <RadialGradient
+                    c={highlight}
+                    r={oceanGradientRadius}
+                    colors={[globeStyle.ocean.light, globeStyle.ocean.mid, globeStyle.ocean.deep]}
+                    positions={[0, 0.45, 1]}
+                  />
+                </Circle>
+
+                {/* Land tops (grey, green, and the country being toggled) drawn into one layer.
+                  The layer's filter adds, beneath them, the darker sides (shifted copies)
+                  and the shallow-water glow, so the land is only drawn once. */}
+                <Group clip={sphereClip}>
+                  <Group layer={landLayer}>
+                    <Path path={landPath} fillType="evenOdd" transform={LAND_PATH_TRANSFORM}>
+                      <LinearGradient
+                        start={landGradientStart}
+                        end={landGradientEnd}
+                        colors={[globeStyle.land.top, globeStyle.land.bottom]}
+                      />
+                    </Path>
+                    <Path
+                      path={visitedPath}
+                      color={globeColors.visited}
+                      fillType="evenOdd"
+                      transform={LAND_PATH_TRANSFORM}
+                    />
+                    <Path
+                      path={fadePath}
+                      color={fadeColor}
+                      fillType="evenOdd"
+                      transform={LAND_PATH_TRANSFORM}
+                    />
+                  </Group>
+                </Group>
+
+                {/* Borders and lit edges: grey everywhere, then green over visited countries */}
+                <Path
+                  path={landPath}
+                  color={globeColors.landBorder}
+                  style="stroke"
+                  strokeWidth={0.6 * PATH_SCALE}
+                  strokeJoin="round"
+                  transform={LAND_PATH_TRANSFORM}
+                />
+                <Path
+                  path={landPath}
+                  color={globeStyle.outlineHighlight.color}
+                  style="stroke"
+                  strokeWidth={globeStyle.outlineHighlight.width * PATH_SCALE}
+                  strokeJoin="round"
+                  transform={HIGHLIGHT_TRANSFORM}
+                />
                 <Path
                   path={visitedPath}
-                  color={globeColors.visited}
+                  color={globeColors.visitedBorder}
+                  style="stroke"
+                  strokeWidth={0.6 * PATH_SCALE}
+                  strokeJoin="round"
+                  transform={LAND_PATH_TRANSFORM}
+                />
+              </>
+            )}
+
+            {/* Selected country (vector globe): lightened, with a glowing outline. The
+                textured globe draws its own selection glow. */}
+            {drawsVector && (
+              <>
+                <Path
+                  path={selectedPath}
+                  color={globeColors.selectedTint}
                   fillType="evenOdd"
                   transform={LAND_PATH_TRANSFORM}
                 />
                 <Path
-                  path={fadePath}
-                  color={fadeColor}
-                  fillType="evenOdd"
+                  path={selectedPath}
+                  color={globeColors.selectedGlow}
+                  style="stroke"
+                  strokeWidth={3 * PATH_SCALE}
+                  strokeJoin="round"
+                  transform={LAND_PATH_TRANSFORM}>
+                  <BlurMask blur={4 * PATH_SCALE} style="normal" />
+                </Path>
+                <Path
+                  path={selectedPath}
+                  color={globeColors.selectedOutline}
+                  style="stroke"
+                  strokeWidth={1.5 * PATH_SCALE}
+                  strokeJoin="round"
                   transform={LAND_PATH_TRANSFORM}
                 />
-              </Group>
-            </Group>
+              </>
+            )}
 
-            {/* Borders and lit edges: grey everywhere, then green over visited countries */}
-            <Path
-              path={landPath}
-              color={globeColors.landBorder}
-              style="stroke"
-              strokeWidth={0.6 * PATH_SCALE}
-              strokeJoin="round"
-              transform={LAND_PATH_TRANSFORM}
-            />
-            <Path
-              path={landPath}
-              color={globeStyle.outlineHighlight.color}
-              style="stroke"
-              strokeWidth={globeStyle.outlineHighlight.width * PATH_SCALE}
-              strokeJoin="round"
-              transform={HIGHLIGHT_TRANSFORM}
-            />
-            <Path
-              path={visitedPath}
-              color={globeColors.visitedBorder}
-              style="stroke"
-              strokeWidth={0.6 * PATH_SCALE}
-              strokeJoin="round"
-              transform={LAND_PATH_TRANSFORM}
-            />
+            {!textureEffect && (
+              <>
+                {/* Lighting over everything: light top-left to shade bottom-right */}
+                <Circle cx={cx} cy={cy} r={radius}>
+                  <LinearGradient
+                    start={shadeStart}
+                    end={shadeEnd}
+                    colors={[globeStyle.lighting.lit, TRANSPARENT, globeStyle.lighting.shade]}
+                  />
+                </Circle>
 
-            {/* Selected country: lightened, with a glowing outline */}
-            <Path
-              path={selectedPath}
-              color={globeColors.selectedTint}
-              fillType="evenOdd"
-              transform={LAND_PATH_TRANSFORM}
-            />
-            <Path
-              path={selectedPath}
-              color={globeColors.selectedGlow}
-              style="stroke"
-              strokeWidth={3 * PATH_SCALE}
-              strokeJoin="round"
-              transform={LAND_PATH_TRANSFORM}>
-              <BlurMask blur={4 * PATH_SCALE} style="normal" />
-            </Path>
-            <Path
-              path={selectedPath}
-              color={globeColors.selectedOutline}
-              style="stroke"
-              strokeWidth={1.5 * PATH_SCALE}
-              strokeJoin="round"
-              transform={LAND_PATH_TRANSFORM}
-            />
+                {/* Rim shadow: a soft dark crescent along the bottom-right edge */}
+                <Circle cx={cx} cy={cy} r={radius}>
+                  <RadialGradient
+                    c={rimShadowCentre}
+                    r={rimGradientRadius}
+                    colors={[TRANSPARENT, TRANSPARENT, globeStyle.lighting.rimShadow]}
+                    positions={[0, 1 - globeStyle.lighting.rimShadowWidth / RIM_REACH, 1]}
+                  />
+                </Circle>
 
-            {/* Lighting over everything: light top-left to shade bottom-right */}
-            <Circle cx={cx} cy={cy} r={radius}>
-              <LinearGradient
-                start={shadeStart}
-                end={shadeEnd}
-                colors={[globeStyle.lighting.lit, TRANSPARENT, globeStyle.lighting.shade]}
-              />
-            </Circle>
+                {/* Rim light: a bright crescent along the top-left edge */}
+                <Circle cx={cx} cy={cy} r={radius}>
+                  <RadialGradient
+                    c={rimLightCentre}
+                    r={rimGradientRadius}
+                    colors={[TRANSPARENT, TRANSPARENT, globeStyle.lighting.rimLight]}
+                    positions={[0, 1 - globeStyle.lighting.rimLightWidth / RIM_REACH, 1]}
+                  />
+                </Circle>
 
-            {/* Rim shadow: a soft dark crescent along the bottom-right edge */}
-            <Circle cx={cx} cy={cy} r={radius}>
-              <RadialGradient
-                c={rimShadowCentre}
-                r={rimGradientRadius}
-                colors={[TRANSPARENT, TRANSPARENT, globeStyle.lighting.rimShadow]}
-                positions={[0, 1 - globeStyle.lighting.rimShadowWidth / RIM_REACH, 1]}
-              />
-            </Circle>
-
-            {/* Rim light: a bright crescent along the top-left edge */}
-            <Circle cx={cx} cy={cy} r={radius}>
-              <RadialGradient
-                c={rimLightCentre}
-                r={rimGradientRadius}
-                colors={[TRANSPARENT, TRANSPARENT, globeStyle.lighting.rimLight]}
-                positions={[0, 1 - globeStyle.lighting.rimLightWidth / RIM_REACH, 1]}
-              />
-            </Circle>
-
-            {/* Thin soft rim */}
-            <Circle
-              cx={cx}
-              cy={cy}
-              r={radius}
-              color={globeStyle.rim}
-              style="stroke"
-              strokeWidth={1}
-            />
+                {/* Thin soft rim */}
+                <Circle
+                  cx={cx}
+                  cy={cy}
+                  r={radius}
+                  color={globeStyle.rim}
+                  style="stroke"
+                  strokeWidth={1}
+                />
+              </>
+            )}
           </Canvas>
         </View>
       </GestureDetector>

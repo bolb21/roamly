@@ -20,13 +20,16 @@ const COAST_SLOP_PX = 8;
 /**
  * Returns the index of the country at [lon, lat] (degrees), or null for open ocean.
  * `radiusPx` is the globe's current on-screen radius, so the generous tap areas
- * stay the same size in pixels at any zoom.
+ * stay the same size in pixels at any zoom. `textureCountry`, if given, reads the
+ * detailed country texture (texture id = country index + 1): it catches islands and
+ * coastline the coarse outlines here miss.
  */
 export function countryAt(
   countries: CountryShape[],
   lon: number,
   lat: number,
   radiusPx: number,
+  textureCountry?: ((lon: number, lat: number) => number) | null,
 ): number | null {
   const point: [number, number] = [lon, lat];
   const minTarget = MIN_TARGET_PX / radiusPx;
@@ -49,12 +52,18 @@ export function countryAt(
   }
   if (best !== null) return best;
 
-  // 2. The country the tap is inside.
+  // 2. The detailed country texture, when there is one.
+  if (textureCountry) {
+    const id = textureCountry(lon, lat);
+    if (id >= 1 && id <= countries.length) return id - 1;
+  }
+
+  // 3. The country the tap is inside (coarse outlines).
   for (let i = 0; i < countries.length; i++) {
     if (mightReach(i, 0) && geoContains(countries[i].feature, point)) return i;
   }
 
-  // 3. Just off a coast (small islands, thin peninsulas): nearest border point within reach.
+  // 4. Just off a coast (small islands, thin peninsulas): nearest border point within reach.
   bestDistance = slop;
   for (let i = 0; i < countries.length; i++) {
     if (!mightReach(i, slop)) continue;

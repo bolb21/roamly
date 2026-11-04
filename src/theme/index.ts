@@ -29,6 +29,155 @@ export const colors = {
 } as const;
 
 /**
+ * Which globe to draw. 'texture' = the textured planet (a Skia shader); 'vector' =
+ * the raised-country vector globe. 'texture' falls back to 'vector' automatically if
+ * its shader won't compile.
+ */
+export const GLOBE_RENDERER: 'texture' | 'vector' = 'texture';
+
+/**
+ * Stage 2 test for the textured globe: draws a latitude/longitude checkerboard with
+ * markers at London and Sydney instead of the real textures.
+ */
+export const GLOBE_MAPPING_TEST = false;
+
+/**
+ * Preview: draws every country as visited (without touching the saved visited list),
+ * to judge the whole visited palette at a glance.
+ */
+export const DEBUG_ALL_VISITED = false;
+
+/** Textured globe look. Strengths are 0–1 unless noted. */
+export const textureGlobeStyle = {
+  /** Sea colour by depth: shallow over the shelves → mid at `midDepth` → deep (0 = shore, 1 = 7 km). */
+  ocean: { shallow: '#2E86C8', mid: '#15519E', deep: '#0A2560', midDepth: 0.35 },
+  /**
+   * Land: `color` × (reliefMin + reliefRange × relief), where relief is 0–1 and 0.5 is
+   * flat ground. A bigger range makes mountains stand out more.
+   */
+  land: { color: '#9EA6B4', reliefMin: 0.36, reliefRange: 1.3 },
+  /**
+   * Light from the top-left of the screen: `direction` is (right, up, towards you).
+   * `ambient` keeps the shadow side readable (0 = black, 1 = no shading).
+   */
+  light: { direction: [-0.5, 0.55, 0.67], ambient: 0.42 },
+  /** Broad sun highlight on the sea. Higher `sharpness` = smaller spot. */
+  sun: { color: '#CFE8FF', strength: 0.28, sharpness: 14 },
+  /** Blue glow towards the globe's edge. Higher `power` = thinner glow. */
+  rim: { color: '#5FB8FF', strength: 0.55, power: 3 },
+  /** Starfield behind the globe: count, dot size (px) and opacity per layer. */
+  stars: [
+    { count: 140, size: 1, opacity: 0.45 },
+    { count: 45, size: 1.6, opacity: 0.7 },
+    { count: 12, size: 2.4, opacity: 0.9 },
+  ],
+  /** Stars fade out over this many px at the top and bottom of the globe area. */
+  starEdgeFade: 60,
+  /**
+   * Zooms at which the sharper 4096 textures are used (the 2048 ones below). The map's
+   * zoom 1 shows the whole map, so its threshold is higher.
+   */
+  hiResZoom: 1.9,
+  mapHiResZoom: 3.2,
+  /**
+   * Clouds on the globe (still): opacity and colour. They fade out between zoom
+   * `fadeFrom` and `fadeTo`, as they'd look blurry close up.
+   */
+  clouds: { opacity: 0.38, color: '#F4F8FF', fadeFrom: 1.6, fadeTo: 3 },
+  /**
+   * Fine ripples on the sea, strongest in the sun highlight. `size` is the ripple
+   * size in texture pixels (smaller = finer); `grain` is a faint texture everywhere.
+   */
+  ripple: { strength: 0.45, size: 0.9, grain: 0.03 },
+  /** Flat map land brightness (it has no sphere lighting; 1 = as the texture). */
+  mapBrightness: 0.86,
+  /**
+   * Visited countries: their colour × (tintBase + tintRelief × relief), so mountains
+   * still show through the colour. Colours come from visitedColorFor() below.
+   */
+  visited: { tintBase: 0.6, tintRelief: 0.8 },
+  /**
+   * Country borders. Zoomed out they come from the edges in the country texture
+   * (`color`, whose alpha sets the strength; `softness` ≈ width in px). Zoomed in they
+   * are drawn as smooth vector lines (`lines`, width in px) instead: the globe fades
+   * from one to the other between `linesFrom` and `linesFull`; the map always uses lines.
+   */
+  borders: {
+    color: 'rgba(255, 255, 255, 0.45)',
+    softness: 0.5,
+    lines: { color: 'rgba(255, 255, 255, 0.8)', width: 0.8 },
+    linesFrom: 2.2,
+    linesFull: 3,
+  },
+  /**
+   * Selected country: brightened, with a soft glowing outline `glowWidth` px wide.
+   * `glowStrength` 0–1.
+   */
+  selection: { brighten: 0.2, glowColor: '#62F2F4', glowWidth: 3.5, glowStrength: 0.9 },
+  /**
+   * Countries smaller than `maxPixels` in the 2048 country texture get a glowing dot at
+   * their centre when visited, so they're never invisible. Sizes in px.
+   */
+  smallCountryDots: { maxPixels: 30, radius: 2.2, glowRadius: 5 },
+  /** Mapping test colours: 15° squares, equator/prime meridian, and the two markers. */
+  test: {
+    light: '#DCE6F2',
+    dark: '#3A5F96',
+    lines: '#FF4D4D',
+    london: '#FFD400',
+    sydney: '#00E5A0',
+    outline: 'rgba(10, 20, 40, 0.85)',
+  },
+} as const;
+
+/**
+ * Visited colours: a narrow family of forest greens (each country gets one, so
+ * neighbours differ a little), plus ice for the polar ice sheets. Tune freely.
+ */
+export const visitedPalette = {
+  forest: ['#2F7448', '#357C4C', '#2C6C4C', '#3A8150', '#317046'],
+  ice: '#F4F8FB',
+  paleIce: '#DCEAF2',
+} as const;
+
+/** Countries drawn as ice rather than forest when visited. */
+const ICE_COUNTRIES: Record<string, 'ice' | 'paleIce'> = {
+  Antarctica: 'ice',
+  Greenland: 'paleIce',
+  'Fr. S. Antarctic Lands': 'paleIce',
+};
+
+/** Repeatable number in [0, 1) from a string. */
+function hashUnit(text: string) {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619);
+  return (h >>> 0) / 4294967296;
+}
+
+/** Lightens (amount > 0) or darkens (amount < 0) a #RRGGBB colour. */
+function shade(hex: string, amount: number) {
+  const target = amount > 0 ? 255 : 0;
+  const t = Math.abs(amount);
+  const channel = (i: number) =>
+    Math.round(parseInt(hex.slice(i, i + 2), 16) * (1 - t) + target * t)
+      .toString(16)
+      .padStart(2, '0');
+  return `#${channel(1)}${channel(3)}${channel(5)}`;
+}
+
+/** How much each country's colour may be lightened or darkened, so neighbours differ. */
+const LIGHTNESS_VARIATION = 0.04;
+
+/** A visited country's colour: one of the forest greens (or ice), picked from its name. */
+export function visitedColorFor(name: string): string {
+  const variation = (hashUnit(name) * 2 - 1) * LIGHTNESS_VARIATION;
+  const ice = ICE_COUNTRIES[name];
+  if (ice) return shade(visitedPalette[ice], variation * 0.3);
+  const forest = visitedPalette.forest;
+  return shade(forest[Math.floor(hashUnit(name + 'g') * forest.length)], variation);
+}
+
+/**
  * Test switch: draws the countries' raised "slab" sides in bright magenta with a
  * big offset, to prove the layer is visible on the phone. Set to false for the real look.
  */

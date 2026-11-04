@@ -177,3 +177,146 @@ Side copies grow with depth (at most 1.25 px apart) so deep sides don't look ste
 
 Not done yet: horizontal wrap-around (the map stops at ±180°), the mock current
 location, and activity markers.
+
+## Textured globe: texture pipeline (stage 1)
+
+`npm run build:globe-textures` (`scripts/build-globe-textures.mjs`, about 45 s) builds the
+textured globe's images. Sources and licences are in `docs/ASSETS.md`. The first run
+downloads ETOPO 2022 (466 MB) into `data-raw/`, which is not committed.
+
+| File | Contents |
+| --- | --- |
+| `assets/globe/earth-{4096,2048}.jpg` | Three greyscale layers in one image (saves graphics memory): red = shaded relief (0.5 = flat), green = land mask, blue = ocean depth (√ scaled, 1 = 7 km) |
+| `assets/globe/countries-{4096,2048}.png` | Country id per pixel, no anti-aliasing: 0 = sea, app country index + 1, 255 = land not in the app's list (microstates) |
+| `assets/globe/clouds-2048.jpg` | Cloud cover, generated on the sphere so it has no seam at ±180° |
+| `assets/globe/country-ids.json` | Id → app country id/name, and pixel counts (for small-country dots) |
+| `docs/preview/*` | Previews and `id-check.md` (texture ids vs the app's tap test at known places) |
+
+- Relief: ETOPO surface elevation averaged 2:1 to 10800×5400, shaded from four
+  directions (NW strongest) with 24× height exaggeration, then scaled down.
+- Land mask and ids come from Natural Earth 50m outlines; ids follow the app's 110m
+  country list, so the 63 microstates only in 50m are "unassigned" (255) for now.
+- At exact coastlines the 50m texture and the app's 110m tap outlines can disagree by a
+  few km (Rio and Suva on the shore, Taveuni missing from 110m). Inland they agree.
+- Gotchas: geotiff's `readRasters({ width, height })` skips pixels instead of averaging;
+  sharp turns a one-channel image into three when resizing unless you `extractChannel(0)`.
+
+## Textured globe: renderer (stages 2–3)
+
+`GLOBE_RENDERER` in `src/theme/index.ts` picks the globe: `'texture'` (default) or
+`'vector'` (the raised-country globe). Gestures, selection, the name bubble and visited
+state are shared; only the drawing differs. The texture renderer falls back to vector
+(with a console warning) if its shader won't compile or a texture fails to load, and
+shows the vector globe while the first texture loads.
+
+- `globeShader.ts`: SkSL. Each pixel → point on the sphere in view space → world space
+  (transpose of the rotation matrix, passed as three row uniforms) → lon/lat → texture.
+- `TextureGlobeLayers.tsx`: the shader on a circle, texture loading (`useGlobeTextures`)
+  and the starfield. The 2048 earth texture loads at start; the 4096 one loads the first
+  time zoom passes `textureGlobeStyle.hiResZoom`, and is used above it.
+- `GLOBE_MAPPING_TEST` swaps in the stage 2 checkerboard (London and Sydney markers,
+  vector outlines on top) to check the mapping.
+- Lighting is in screen space (top-left), with ambient light so the shadow side stays
+  readable, a broad sun highlight on the sea, and a blue fresnel rim. All values are in
+  `textureGlobeStyle`.
+
+## Textured globe: countries (stage 4)
+
+- The shader reads the country id texture (`countries-*.png`, nearest sampling) at four
+  points around each pixel. It averages their colours, so colour boundaries look soft,
+  and draws a border where the ids differ (`textureGlobeStyle.borders`).
+- Visited colours come from a 256 × 1 palette image rebuilt when the visited set changes:
+  pixel `id` = that country's colour, alpha 1 if visited. The country being toggled is
+  passed as uniforms (`fadeId`, `fadeAmount`, `fadeColor`), so it fades over 500 ms, with
+  a light haptic.
+- Visited land = colour × (0.6 + 0.8 × relief), so the terrain shows through.
+- `visitedColorFor()` in the theme picks each country's colour: an override table
+  (rainforest, desert, highland, Mediterranean, boreal, ice), then latitude, then a ±6%
+  lightness variation from a hash of the name so neighbours differ. Antarctica is icy
+  white and Greenland pale ice.
+- Selection: the selected id is brightened, and a ring of 8 id samples `glowWidth` px out
+  gives a soft glow that hugs the outline (only computed while something is selected).
+- Countries under `smallCountryDots.maxPixels` in the 2048 id texture (Luxembourg,
+  Cyprus, Brunei…) get a glowing dot at their anchor when visited.
+- `DEBUG_ALL_VISITED` shows every country visited without touching the saved list.
+- On the textured globe the vector outlines aren't built at all (`vectorShown`), which
+  saves the path-building time each frame.
+
+
+## Textured flat map, forest greens, layout (after stage 4)
+
+- **Flat map** now uses the same land as the textured globe: a shader (`MAP` in
+  `globeShader.ts`) covers the canvas, turns each pixel into map units → lon/lat
+  (inverse Mercator) and draws relief, borders, visited colours and the selection glow
+  with the shared `LAND` code. No sea: off land is see-through. The vector map is the
+  fallback if the shader fails.
+- The map is **Mercator cropped to 84°N–57°S** (`src/globe/flatMap.ts`), about 1.5:1,
+  instead of the whole-world Natural Earth map. Zoom 1 fills the canvas height, so there
+  is never empty space above or below; `MAP_ZOOM` is 1–8. Antarctica is left out.
+- **Textures are loaded once** by the Visited screen (`useGlobeTextures` in
+  `globeTextures.ts`) and shared by both views; each picks 2048 or 4096 by its own zoom
+  (`useTextureSet`). The colour table is rebuilt only when the visited set changes.
+- **Visited colours** are a narrow family of forest greens (`visitedPalette.forest`),
+  one per country from a hash of its name, ±4% lightness. Antarctica and Greenland stay
+  ice.
+- **Borders and colour edges** are sampled about a screen pixel apart
+  (`borders.softness`), so they stay thin at any zoom. Zoomed far in, edges still follow
+  the texture's pixel grid (most visible far north on the map, where Mercator stretches
+  the texture most).
+- **Globe zoom** goes to 12× (`MAX_ZOOM`). Past about 6× the relief softens: 4096 is the
+  textures' full detail.
+- **Layout:** the globe/map area runs edge to edge, and the top row (visited count and
+  speech bubble) floats over it. Before, expanding or collapsing the bubble resized the
+  globe's canvas, which glitched and could leave the globe grey.
+
+
+## Textured globe: clouds, ocean detail and performance (stage 5)
+
+- **Clouds** (`clouds-2048.jpg`, globe only) are still, and fade out between zoom
+  `clouds.fadeFrom` and `fadeTo` (they look blurry close up); once faded they aren't
+  sampled at all. A slow drift was tried and dropped: it looked wrong while zooming.
+- **Ocean ripples**: value noise in texture space (so it sticks to the globe), stretched
+  east-west into wave glints, strongest in the sun highlight, plus a faint grain over all
+  sea. Never finer than about two screen pixels, so it doesn't shimmer when small.
+- **Taps** read the 4096 country texture first (after the tiny-country targets), so
+  islands and coastline missing from the coarse 110m outlines can be tapped. The texture
+  is read back once (`readPixels`, one byte per pixel, or colour as a fallback).
+- **Borders zoomed in** are vector lines: thin white lines from the Natural Earth 1:50m
+  shared borders (`buildBorderLines`: each border once, no coastlines, cut into 32-point
+  pieces so only pieces near the screen are projected; `buildGlobeLines` in
+  projection.ts). The globe fades from texture borders to lines between
+  `borders.linesFrom` and `linesFull`. ~20k points; about 0.7 ms per frame (JIT) at 3×,
+  0.2 ms at 12×. The map always draws them as one static path (three copies for the
+  wrap-around). An 8192 country texture was tried first and dropped: its 32 MB upload
+  stalled frames when zooming in, and it was still stepped at 12×.
+- **Map zoom** goes from the whole map (zoom 1, fits the width) to 18×; it opens zoomed
+  to fill the height. The map **wraps round** east–west: the view's centre is kept in
+  0…map.width, the shader samples past the edges (the textures repeat), and taps, the
+  bubble and dots use the nearest copy.
+- **Hidden-tab fix**: Expo Router hides the inactive tab with `display: 'none'`, which
+  loses the Skia canvases' drawing (the globe came back grey, then black). The app
+  layout gives `TabSlot` its own `renderFn` that keeps opened tabs laid out and makes the
+  inactive one transparent and untouchable instead (`src/app/_layout.tsx`).
+
+### Performance
+
+Measured by reasoning about the work, not on a phone; check the readout on device.
+
+| Effect | Per pixel (GPU) | Per frame (UI thread) | Memory |
+| --- | --- | --- | --- |
+| Earth (relief, mask, depth) | 1 texture read | uniforms only | 2048: ~11 MB; 4096: ~43 MB (with mipmaps) |
+| Countries (soft edges, borders, visited colour) | 4 id reads + 4 palette reads | — | ids 2048 / 4096: ~2 / 8 MB (one byte per pixel); palette 1 KB |
+| Selection glow | 8 more id reads, only while something is selected | — | — |
+| Clouds | 1 texture read (none once faded out) | — | ~3 MB |
+| Border lines (zoomed in) | stroke | ~0.2–0.7 ms path build (JIT) | ~20k points |
+| Ripples and grain | ~2 noise evaluations (arithmetic only) | — | — |
+| Lighting, sun, rim | arithmetic only | — | — |
+| Tap lookup | — | — (once per tap, JS thread) | 8 MB copy of the 4096 ids |
+
+- The vector outlines aren't built at all on the textured globe, so path-building time
+  is ~0 ms (it was ~2 ms per frame on the vector globe).
+- The costliest case is a full-screen view with something selected: about 18 texture
+  reads per pixel. If that drops frames, the first things to cut are the glow ring
+  (8 reads) and the 4-sample soft edges (down to 1).
+- Texture memory with everything loaded: ~70 MB of graphics memory (4096 and 2048
+  earth and ids, clouds).

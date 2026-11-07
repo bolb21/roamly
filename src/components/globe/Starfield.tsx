@@ -1,5 +1,5 @@
-// The night sky behind the globe: faint blue galaxy dust along a diagonal band with a
-// soft glow, plain white stars, and a few bright stars with a halo. All still, and
+// The night sky behind the globe: faint blue galaxy dust in soft, patchy clouds spread
+// over the sky, plain white stars, and a few bright stars with a halo. All still, and
 // built once; drawn with points and gradients only (no blur), so it stays cheap even
 // though the canvas redraws every frame while the globe moves. Look: theme
 // `textureGlobeStyle.starfield` (reference: docs/design/stars-ref-1.jpeg).
@@ -17,12 +17,6 @@ import { useState } from 'react';
 import { textureGlobeStyle } from '@/theme';
 
 const { starfield } = textureGlobeStyle;
-/** Along the band, the glow is made of these soft blobs: position (0–1) and size. */
-const GLOW_BLOBS = [
-  { at: 0.2, size: 0.45 },
-  { at: 0.5, size: 0.6 },
-  { at: 0.8, size: 0.4 },
-];
 
 /** Repeatable pseudo-random number in [0, 1) for a given index. */
 function random(i: number) {
@@ -37,16 +31,38 @@ function bell(i: number) {
 
 type Point = { x: number; y: number };
 
+type Cloud = {
+  centre: Point;
+  /** Half its length, px. */
+  radius: number;
+  /** Direction of its length (radians), and thickness compared with length. */
+  angle: number;
+  stretch: number;
+  color: string;
+};
+
 /** Everything the sky draws, worked out once for a canvas size. */
 function buildSky(width: number, height: number) {
-  const { band, dust, stars, bright } = starfield;
-  const from = { x: band.from[0] * width, y: band.from[1] * height };
-  const to = { x: band.to[0] * width, y: band.to[1] * height };
-  const length = Math.hypot(to.x - from.x, to.y - from.y);
-  // Unit vectors along and across the band.
-  const along = { x: (to.x - from.x) / length, y: (to.y - from.y) / length };
-  const across = { x: -along.y, y: along.x };
-  const bandWidth = band.width * Math.hypot(width, height);
+  const { clouds: layout, dust, stars, bright, glow } = starfield;
+  const diagonal = Math.hypot(width, height);
+
+  // Dust clouds, one per grid cell (jittered), so they're spread over the whole sky.
+  const clouds: Cloud[] = Array.from({ length: layout.count }, (_, i) => {
+    const seed = 7000 + i * 11;
+    const column = i % layout.columns;
+    const row = Math.floor(i / layout.columns) % layout.rows;
+    const size = layout.sizes[0] + random(seed + 2) * (layout.sizes[1] - layout.sizes[0]);
+    return {
+      centre: {
+        x: ((column + 0.15 + random(seed) * 0.7) / layout.columns) * width,
+        y: ((row + 0.15 + random(seed + 1) * 0.7) / layout.rows) * height,
+      },
+      radius: (size * diagonal) / 2,
+      angle: random(seed + 3) * Math.PI,
+      stretch: layout.stretch[0] + random(seed + 4) * (layout.stretch[1] - layout.stretch[0]),
+      color: glow[i % glow.length],
+    };
+  });
 
   // Dust, grouped by size and opacity so each group is one Points draw.
   const groups = dust.sizes.flatMap((size) =>
@@ -55,24 +71,28 @@ function buildSky(width: number, height: number) {
   for (let i = 0; i < dust.count; i++) {
     const seed = 5000 + i * 7;
     let point: Point;
-    if (random(seed) < dust.inBand) {
-      const t = random(seed + 1) * length;
-      const off = bell(seed + 2) * bandWidth;
+    if (random(seed) < dust.inClouds) {
+      // Denser towards a cloud's middle.
+      const cloud = clouds[Math.floor(random(seed + 1) * clouds.length)];
+      const along = bell(seed + 2) * cloud.radius;
+      const across = bell(seed + 3) * cloud.radius * cloud.stretch;
+      const cos = Math.cos(cloud.angle);
+      const sin = Math.sin(cloud.angle);
       point = {
-        x: from.x + along.x * t + across.x * off,
-        y: from.y + along.y * t + across.y * off,
+        x: cloud.centre.x + along * cos - across * sin,
+        y: cloud.centre.y + along * sin + across * cos,
       };
     } else {
-      point = { x: random(seed + 3) * width, y: random(seed + 4) * height };
+      point = { x: random(seed + 4) * width, y: random(seed + 5) * height };
     }
     // Most specks small and faint; a few bigger or brighter.
     const s = Math.min(
       dust.sizes.length - 1,
-      Math.floor(random(seed + 5) ** 2 * dust.sizes.length),
+      Math.floor(random(seed + 6) ** 2 * dust.sizes.length),
     );
     const o = Math.min(
       dust.opacities.length - 1,
-      Math.floor(random(seed + 6) ** 1.5 * dust.opacities.length),
+      Math.floor(random(seed + 7) ** 1.5 * dust.opacities.length),
     );
     groups[s * dust.opacities.length + o].points.push(point);
   }
@@ -90,18 +110,11 @@ function buildSky(width: number, height: number) {
     y: random(9001 + i * 2) * height,
   }));
 
-  const glow = GLOW_BLOBS.map(({ at, size }) => ({
-    centre: { x: from.x + along.x * at * length, y: from.y + along.y * at * length },
-    radius: (size * length) / 2,
-  }));
-  const angle = Math.atan2(along.y, along.x);
-
   return {
     dustGroups: groups.filter((g) => g.points.length > 0),
     starLayers,
     brightStars,
-    glow,
-    angle,
+    clouds,
   };
 }
 
@@ -109,24 +122,24 @@ function buildSky(width: number, height: number) {
 export function Starfield({ width, height }: { width: number; height: number }) {
   const [sky] = useState(() => buildSky(width, height));
   const fade = Math.min(0.45, starfield.edgeFade / height);
-  const { bright, dust, glow } = starfield;
+  const { bright, dust } = starfield;
   return (
     <Group layer>
-      {/* Soft glow along the galaxy band: round gradients squashed into long ovals */}
-      {sky.glow.map((blob, i) => (
+      {/* Soft glow in each dust cloud: round gradients squashed into ovals */}
+      {sky.clouds.map((cloud, i) => (
         <Group
           key={`glow${i}`}
           transform={[
-            { translateX: blob.centre.x },
-            { translateY: blob.centre.y },
-            { rotate: sky.angle },
-            { scaleY: glow.thickness },
+            { translateX: cloud.centre.x },
+            { translateY: cloud.centre.y },
+            { rotate: cloud.angle },
+            { scaleY: cloud.stretch },
           ]}>
-          <Circle cx={0} cy={0} r={blob.radius}>
+          <Circle cx={0} cy={0} r={cloud.radius}>
             <RadialGradient
               c={{ x: 0, y: 0 }}
-              r={blob.radius}
-              colors={[glow.color, 'transparent']}
+              r={cloud.radius}
+              colors={[cloud.color, 'transparent']}
             />
           </Circle>
         </Group>

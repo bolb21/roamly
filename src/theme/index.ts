@@ -86,21 +86,26 @@ export const textureGlobeStyle = {
       color: '#F4F8FF',
       haloColor: 'rgba(150, 190, 255, 0.5)',
     },
-    /** The galaxy band (like the Milky Way) runs diagonally from `from` to `to`. */
-    band: { from: [-0.1, 0.95], to: [1.1, 0.2], width: 0.11 },
     /**
-     * Faint blue dust: `count` specks, `inBand` share of them along the band, the rest
+     * Patchy galaxy dust clouds, spread over the sky: `count` of them, placed one per
+     * cell of a `columns` × `rows` grid (with jitter) so they cover it evenly. Each is
+     * an oval `sizes[0]`–`sizes[1]` of the canvas diagonal across, `stretch` = its
+     * thickness compared with its length.
+     */
+    clouds: { count: 6, columns: 2, rows: 3, sizes: [0.22, 0.42], stretch: [0.35, 0.7] },
+    /**
+     * Faint blue dust: `count` specks, `inClouds` share of them in the clouds, the rest
      * scattered. Each speck gets one of `sizes` and one of `opacities`.
      */
     dust: {
-      count: 1300,
-      inBand: 0.8,
+      count: 1400,
+      inClouds: 0.65,
       color: '#A6C0FF',
       sizes: [0.8, 1.2, 1.8],
-      opacities: [0.16, 0.3, 0.5],
+      opacities: [0.14, 0.27, 0.45],
     },
-    /** Very soft glow along the band. */
-    glow: { color: 'rgba(80, 125, 235, 0.24)', thickness: 0.32 },
+    /** Very soft glow in each cloud: these colours in turn (blue, violet, teal). */
+    glow: ['rgba(80, 125, 235, 0.16)', 'rgba(120, 100, 225, 0.11)', 'rgba(60, 150, 215, 0.12)'],
   },
   /**
    * Zooms at which the sharper 4096 textures are used (the 2048 ones below). The map's
@@ -131,13 +136,21 @@ export const textureGlobeStyle = {
   /**
    * Country borders. Zoomed out they come from the edges in the country texture
    * (`color`, whose alpha sets the strength; `softness` ≈ width in px). Zoomed in they
-   * are drawn as smooth vector lines (`lines`, width in px) instead: the globe fades
-   * from one to the other between `linesFrom` and `linesFull`; the map always uses lines.
+   * are drawn as vector lines (`lines`) instead: a thin, half-see-through line with a
+   * faint wider halo, its corners rounded (`cornerRadius`) so the outlines' straight
+   * pieces look less ruled. Sizes in px. The globe fades from texture borders to lines
+   * between `linesFrom` and `linesFull`; the map always uses lines.
    */
   borders: {
     color: 'rgba(255, 255, 255, 0.45)',
     softness: 0.5,
-    lines: { color: 'rgba(255, 255, 255, 0.85)', width: 1.4 },
+    lines: {
+      color: 'rgba(255, 255, 255, 0.55)',
+      width: 0.9,
+      haloColor: 'rgba(255, 255, 255, 0.1)',
+      haloWidth: 2.4,
+      cornerRadius: 3,
+    },
     linesFrom: 1.6,
     linesFull: 2.3,
   },

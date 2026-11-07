@@ -43,7 +43,7 @@ import {
   type GlobeTextures,
 } from '@/components/globe/globeTextures';
 import { makeLandLayerPaint } from '@/components/globe/landLayer';
-import { LandTextures } from '@/components/globe/TextureGlobeLayers';
+import { LandTextures, SoftBorderLines } from '@/components/globe/TextureGlobeLayers';
 import {
   getFlatMapBorderPath,
   getFlatMapData,
@@ -90,7 +90,7 @@ const VISITED_FADE_MS = 500;
 const REFERENCE_PX_PER_RADIAN = 150;
 const NO_COUNTRY = -1;
 /** Map border lines are this share of their full width when the whole map shows… */
-const MAP_LINES_MIN = 0.35;
+const MAP_LINES_MIN = 0.55;
 /** …growing to full width by this zoom. */
 const MAP_LINES_FULL_ZOOM = 5;
 /** The detailed border lines are built this long after the map first appears. */
@@ -308,11 +308,11 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited, tex
     );
     return () => clearTimeout(id);
   }, []);
-  // Thinner when zoomed out (the whole map is small), full width from mapLinesFull up.
-  const borderLineWidth = useDerivedValue(() => {
+  // Map units per screen px for the border lines: thinner when zoomed out (the whole
+  // map is small), full size from MAP_LINES_FULL_ZOOM up.
+  const borderUnit = useDerivedValue(() => {
     const grow = Math.min(1, Math.max(0, (zoom.get() - 1) / (MAP_LINES_FULL_ZOOM - 1)));
-    const px = textureGlobeStyle.borders.lines.width * (MAP_LINES_MIN + (1 - MAP_LINES_MIN) * grow);
-    return px / view.get().scale;
+    return (MAP_LINES_MIN + (1 - MAP_LINES_MIN) * grow) / view.get().scale;
   });
 
   // Screen position of the selected country's anchor, for the name bubble.
@@ -469,17 +469,10 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited, tex
                     height={height}
                   />
                 )}
-                {/* Thin white borders from the detailed outlines */}
+                {/* Soft white borders from the detailed outlines */}
                 {borderPath && (
                   <Group transform={mapTransform}>
-                    <Path
-                      path={borderPath}
-                      color={textureGlobeStyle.borders.lines.color}
-                      style="stroke"
-                      strokeWidth={borderLineWidth}
-                      strokeJoin="round"
-                      strokeCap="round"
-                    />
+                    <SoftBorderLines path={borderPath} unit={borderUnit} />
                   </Group>
                 )}
               </Group>

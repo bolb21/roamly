@@ -389,6 +389,11 @@ Measured by reasoning about the work, not on a phone; check the readout on devic
   bubble, which now has a set width (in the floating top row it had none, so its text
   wrapped into a tall, narrow strip).
 - **Starfield** (`Starfield.tsx`, theme `starfield`, reference
-  `docs/design/stars-ref-1.jpeg`): faint blue galaxy dust along a diagonal band with a
-  soft glow, plain stars, and a few bright stars with halos. Points and gradients only
-  (no blur), since the canvas redraws every frame while the globe moves.
+  `docs/design/stars-ref-1.jpeg`): faint blue galaxy dust in soft, patchy clouds spread
+  over the whole sky (one per cell of a 2 × 3 grid, jittered; a single diagonal band
+  looked odd behind the globe), each with a faint coloured glow, plus plain stars and a
+  few bright stars with halos. Points and gradients only (no blur), since the canvas
+  redraws every frame while the globe moves.
+- **Softer borders** (`SoftBorderLines`, theme `borders.lines`): a 0.9 px, half
+  see-through white line over a faint 2.4 px halo, with corners rounded (Skia
+  `CornerPathEffect`) so the outlines' straight pieces look less ruled. Same on the map.

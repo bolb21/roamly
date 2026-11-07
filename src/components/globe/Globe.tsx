@@ -103,7 +103,7 @@ const GLOW_FADE_ZOOM = 1.6;
 /** Overlay with UI-thread fps and per-frame path build time. Set to false before demos. */
 const SHOW_PERF = true;
 /** Shown in the perf overlay, to confirm the phone is running the latest code. */
-const BUILD_LABEL = 'galaxy sky v1';
+const BUILD_LABEL = 'soft borders v1';
 
 const TRANSPARENT = 'rgba(0,0,0,0)';
 /** Halo gradient stops: solid at the sphere's edge, fading out over the halo's width. */

@@ -1,11 +1,14 @@
 import {
   Circle,
+  CornerPathEffect,
+  Group,
   Image,
   ImageShader,
   Path,
   Shader,
   Skia,
   type SkImage,
+  type SkPath,
   type SkRuntimeEffect,
 } from '@shopify/react-native-skia';
 import { useEffect, useState } from 'react';
@@ -340,16 +343,53 @@ function BorderLines({ matrix, radius, cx, cy, width, height, opacity }: BorderL
     }
   });
   return (
-    <Path
-      path={path}
-      color={borders.lines.color}
-      opacity={opacity}
-      style="stroke"
-      strokeWidth={borders.lines.width * PATH_SCALE}
-      strokeJoin="round"
-      strokeCap="round"
-      transform={LINES_TRANSFORM}
-    />
+    <Group opacity={opacity} transform={LINES_TRANSFORM}>
+      <SoftBorderLines path={path} unit={PATH_SCALE} />
+    </Group>
   );
 }
 const LINES_TRANSFORM = [{ scale: 1 / PATH_SCALE }];
+
+/**
+ * Country border lines in the theme's soft style (see `borders.lines`): a faint halo
+ * under a thin, half-see-through line, with rounded corners. `unit` = path units per
+ * screen px, so the sizes stay in screen px whatever the path's scale.
+ */
+export function SoftBorderLines({
+  path,
+  unit,
+}: {
+  path: SharedValue<SkPath> | SkPath;
+  unit: number | SharedValue<number>;
+}) {
+  const { lines } = borders;
+  const value = (px: number) => {
+    'worklet';
+    return px * (typeof unit === 'number' ? unit : unit.get());
+  };
+  const haloWidth = useDerivedValue(() => value(lines.haloWidth));
+  const width = useDerivedValue(() => value(lines.width));
+  const corner = useDerivedValue(() => value(lines.cornerRadius));
+  return (
+    <>
+      <Path
+        path={path}
+        color={lines.haloColor}
+        style="stroke"
+        strokeWidth={haloWidth}
+        strokeJoin="round"
+        strokeCap="round">
+        <CornerPathEffect r={corner} />
+      </Path>
+      <Path
+        path={path}
+        color={lines.color}
+        style="stroke"
+        strokeWidth={width}
+        strokeJoin="round"
+        strokeCap="round">
+        <CornerPathEffect r={corner} />
+      </Path>
+    </>
+  );
+}

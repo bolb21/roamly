@@ -24,7 +24,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 
-import { geoEquirectangular, geoPath } from 'd3-geo';
+import { geoEquirectangular, geoIdentity, geoPath, geoStream } from 'd3-geo';
 import { fromFile } from 'geotiff';
 import sharp from 'sharp';
 import { feature } from 'topojson-client';
@@ -103,7 +103,8 @@ async function readElevation() {
       const out = (y + row) * WORK_W;
       for (let x = 0; x < WORK_W; x++) {
         const c = x * 2;
-        elevation[out + x] = (band[top + c] + band[top + c + 1] + band[bottom + c] + band[bottom + c + 1]) / 4;
+        elevation[out + x] =
+          (band[top + c] + band[top + c + 1] + band[bottom + c] + band[bottom + c + 1]) / 4;
       }
     }
   }
@@ -257,6 +258,199 @@ function countryList() {
   const countries = list.map((c, i) => ({ ...c, feature: features[i] }));
   const items = features.map((f, i) => ({ feature: f, value: i + 1 }));
   return { countries, items };
+}
+
+/** Size (degrees) of the grid squares the land is cut into for close-up vector drawing. */
+const LAND_CELL_DEG = 5;
+/**
+ * The grid starts at this longitude: the flat map's left edge (just east of Russia's
+ * far tip), so no piece straddles the map's edge.
+ */
+const LAND_CELL_ORIGIN = -169;
+/**
+ * Neighbouring pieces overlap by this much (degrees), so no hairline gap shows between
+ * them when drawn (their cut edges are rounded separately). Pieces never reach past
+ * their country's outline, so the overlap can't be seen.
+ */
+const LAND_CELL_OVERLAP = 0.25;
+
+/** Signed area of a ring (planar, lon/lat). */
+function ringArea(ring) {
+  let sum = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const [x1, y1] = ring[i];
+    const [x2, y2] = ring[(i + 1) % ring.length];
+    sum += x1 * y2 - x2 * y1;
+  }
+  return sum / 2;
+}
+
+/** Collects a d3 stream's rings (closed), as [x, y] arrays. */
+function ringCollector(rings) {
+  let current = null;
+  return {
+    point(x, y) {
+      current.push([x, y]);
+    },
+    lineStart() {
+      current = [];
+    },
+    lineEnd() {
+      if (current.length >= 3) {
+        const [fx, fy] = current[0];
+        const [lx, ly] = current[current.length - 1];
+        if (fx !== lx || fy !== ly) current.push([fx, fy]);
+        rings.push(current);
+      }
+      current = null;
+    },
+    polygonStart() {},
+    polygonEnd() {},
+    sphere() {},
+  };
+}
+
+/**
+ * A polygon's rings in plain x = longitude, y = -latitude, cut at the antimeridian
+ * (some outlines, like Russia's far east, cross it; on a flat grid they'd wrap round the
+ * whole world). No extra points are added along edges (precision 0).
+ */
+function cutAtAntimeridian(polygon) {
+  const rings = [];
+  const flat = geoEquirectangular()
+    .scale(180 / Math.PI)
+    .translate([0, 0])
+    .precision(0);
+  geoStream({ type: 'Polygon', coordinates: polygon }, flat.stream(ringCollector(rings)));
+  return rings;
+}
+
+/**
+ * The part of a flat polygon (closed rings in x, y) inside a rectangle, as closed rings,
+ * using d3's rectangle clipping. Unlike clipRing it never leaves zero-width "bridges"
+ * along the rectangle's edge (they showed as hairlines when drawn).
+ */
+function clipPolygon(rings, x0, x1, y0, y1) {
+  const out = [];
+  const clip = geoIdentity().clipExtent([
+    [x0, y0],
+    [x1, y1],
+  ]);
+  geoStream({ type: 'Polygon', coordinates: rings }, clip.stream(ringCollector(out)));
+  return out;
+}
+
+/** Sutherland–Hodgman: the part of a ring inside a lon/lat rectangle (planar). */
+function clipRing(ring, x0, x1, y0, y1) {
+  const edges = [
+    [(p) => p[0] >= x0, (a, b) => [x0, a[1] + ((x0 - a[0]) / (b[0] - a[0])) * (b[1] - a[1])]],
+    [(p) => p[0] <= x1, (a, b) => [x1, a[1] + ((x1 - a[0]) / (b[0] - a[0])) * (b[1] - a[1])]],
+    [(p) => p[1] >= y0, (a, b) => [a[0] + ((y0 - a[1]) / (b[1] - a[1])) * (b[0] - a[0]), y0]],
+    [(p) => p[1] <= y1, (a, b) => [a[0] + ((y1 - a[1]) / (b[1] - a[1])) * (b[0] - a[0]), y1]],
+  ];
+  let points = ring;
+  for (const [inside, cut] of edges) {
+    const out = [];
+    const n = points.length;
+    for (let i = 0; i < n; i++) {
+      const a = points[(i + n - 1) % n];
+      const b = points[i];
+      if (inside(b)) {
+        if (!inside(a)) out.push(cut(a, b));
+        out.push(b);
+      } else if (inside(a)) {
+        out.push(cut(a, b));
+      }
+    }
+    points = out;
+    if (points.length === 0) break;
+  }
+  return points;
+}
+
+/**
+ * Every country cut into LAND_CELL_DEG grid squares, for drawing land as sharp vector
+ * shapes when zoomed in (only the squares near the screen are drawn). Written to
+ * src/globe/landCells.json as [country index, cell x, cell y, then the piece's points as
+ * lon/lat × 100, each relative to the one before].
+ */
+function landCells(countries) {
+  const pieces = [];
+  let points = 0;
+  let fallbacks = 0;
+  countries.forEach((c, index) => {
+    const g = c.feature.geometry;
+    const polygons = g.type === 'Polygon' ? [g.coordinates] : g.coordinates;
+    for (const polygon of polygons) {
+      const rings = cutAtAntimeridian(polygon);
+      if (rings.length === 0) continue;
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      for (const ring of rings) {
+        for (const [x, y] of ring) {
+          minX = Math.min(minX, x);
+          maxX = Math.max(maxX, x);
+          minY = Math.min(minY, -y);
+          maxY = Math.max(maxY, -y);
+        }
+      }
+      const cx0 = Math.floor((minX - LAND_CELL_ORIGIN) / LAND_CELL_DEG);
+      const cx1 = Math.floor((maxX - LAND_CELL_ORIGIN) / LAND_CELL_DEG);
+      const cy0 = Math.floor((minY + 90) / LAND_CELL_DEG);
+      const cy1 = Math.floor((maxY + 90) / LAND_CELL_DEG);
+      for (let cx = cx0; cx <= cx1; cx++) {
+        for (let cy = cy0; cy <= cy1; cy++) {
+          const o = LAND_CELL_OVERLAP;
+          const x0 = LAND_CELL_ORIGIN + cx * LAND_CELL_DEG - o;
+          const x1 = x0 + LAND_CELL_DEG + 2 * o;
+          // Rectangle in y = -latitude.
+          const y1 = -(-90 + cy * LAND_CELL_DEG - o);
+          const y0 = y1 - LAND_CELL_DEG - 2 * o;
+          // d3's clipping, unless it gets the area wrong (it does for Antarctica, whose
+          // outline runs along the South Pole): then Sutherland–Hodgman, ring by ring.
+          const simple = rings
+            .map((closed) => clipRing(closed.slice(0, -1), x0, x1, y0, y1))
+            .filter((ring) => ring.length >= 3);
+          const expected = simple.reduce((sum, ring) => sum + ringArea(ring), 0);
+          let clipped = clipPolygon(rings, x0, x1, y0, y1).map((ring) => ring.slice(0, -1));
+          const area = clipped.reduce((sum, ring) => sum + ringArea(ring), 0);
+          if (Math.abs(Math.abs(area) - Math.abs(expected)) > 1e-6 + Math.abs(expected) * 1e-3) {
+            clipped = simple;
+            fallbacks++;
+          } else if (area * expected < 0) {
+            // Keep the outlines' winding, so overlapping neighbours never cancel out
+            // when drawn (paths are filled by winding).
+            clipped = clipped.map((ring) => ring.slice().reverse());
+          }
+          for (const piece of clipped) {
+            if (piece.length < 3) continue;
+            const encoded = [index, cx, cy];
+            let px = 0;
+            let py = 0;
+            for (const [x, y] of piece) {
+              const X = Math.round(x * 100);
+              const Y = Math.round(-y * 100);
+              encoded.push(X - px, Y - py);
+              px = X;
+              py = Y;
+            }
+            pieces.push(encoded);
+            points += piece.length;
+          }
+        }
+      }
+    }
+  });
+  writeFileSync(
+    new URL('src/globe/landCells.json', ROOT),
+    JSON.stringify({ origin: LAND_CELL_ORIGIN, cell: LAND_CELL_DEG, pieces }) + '\n',
+  );
+  log(
+    `Land cells: ${pieces.length} pieces, ${points} points, ${fallbacks} squares cut the ` +
+      'simple way (src/globe/landCells.json)',
+  );
 }
 
 function rasteriseCountries(items, width) {
@@ -475,6 +669,7 @@ function checkIds(appCountries, ids, width) {
 // --- Run ---
 
 const { countries: appCountries, items } = countryList();
+landCells(appCountries);
 
 const elevation = await readElevation();
 const relief = shadeRelief(elevation);

@@ -8,13 +8,14 @@ import * as Haptics from 'expo-haptics';
 import { withTiming, type SharedValue } from 'react-native-reanimated';
 
 export const MIN_ZOOM = 1;
-export const MAX_ZOOM = 7;
+/** Far enough in to tap the smallest island countries (Andorra, Aruba, Grenada). */
+export const MAX_ZOOM = 30;
 /** From this zoom up, the globe draws the full-detail country outlines. */
 export const DETAIL_ZOOM = 2;
 /** How far past a limit the rubber band can stretch, in log-zoom (0.25 ≈ 22% smaller). */
 const RUBBER_BAND = 0.25;
 /** Each zoom button press multiplies (or divides) the zoom by this. */
-const BUTTON_STEP = 1.8;
+const BUTTON_STEP = 2;
 
 export function clampZoom(zoom: number): number {
   'worklet';
@@ -45,8 +46,11 @@ export function zoomLimitHaptic() {
 
 export type ZoomLimits = { min: number; max: number };
 
-/** Flat map zoom: 1 = the whole map fits on screen (it opens like this); 16 is country-close. */
-export const MAP_ZOOM: ZoomLimits = { min: 1, max: 16 };
+/**
+ * Flat map zoom: 1 = the whole map fits on screen (it opens like this); 80 reaches the
+ * smallest island countries.
+ */
+export const MAP_ZOOM: ZoomLimits = { min: 1, max: 80 };
 
 /**
  * Zoom buttons: animate one step in (`direction` 1) or out (-1). Uses the globe's

@@ -80,6 +80,12 @@ export const textureGlobeStyle = {
   hiResZoom: 1.9,
   mapHiResZoom: 3.2,
   /**
+   * Close up, land is drawn as sharp vector shapes instead of from the textures (which
+   * would turn blocky): from `globeZoom` on the globe and `mapZoom` on the map,
+   * switching back `hysteresis` below (so it doesn't flicker at the threshold).
+   */
+  closeUp: { globeZoom: 5.5, mapZoom: 6, hysteresis: 0.4 },
+  /**
    * Clouds on the globe (still): opacity and colour. They fade out between zoom
    * `fadeFrom` and `fadeTo`, as they'd look blurry close up.
    */
@@ -112,10 +118,16 @@ export const textureGlobeStyle = {
    */
   selection: { brighten: 0.2, glowColor: '#62F2F4', glowWidth: 3.5, glowStrength: 0.9 },
   /**
-   * Countries smaller than `maxPixels` in the 2048 country texture get a glowing dot at
-   * their centre when visited, so they're never invisible. Sizes in px.
+   * Close up (see closeUp) the selection is drawn as vector lines: a soft glow
+   * `glowWidth` px wide on each side of the outline, with a crisp `lineWidth` px line.
    */
-  smallCountryDots: { maxPixels: 30, radius: 2.2, glowRadius: 5 },
+  selectionLines: { lineWidth: 1.3, lineOpacity: 0.8, glowBlur: 2.5, glowOpacity: 0.6 },
+  /**
+   * Countries smaller than `maxPixels` in the 2048 country texture get a glowing dot at
+   * their centre when visited, so they're never invisible. Sizes in px. Zoomed in far
+   * enough to see the country itself (about `fadeFrom`–`fadeTo` px across), the dot fades out.
+   */
+  smallCountryDots: { maxPixels: 30, radius: 2.2, glowRadius: 5, fadeFrom: 14, fadeTo: 24 },
   /** Mapping test colours: 15° squares, equator/prime meridian, and the two markers. */
   test: {
     light: '#DCE6F2',

@@ -15,7 +15,7 @@ import { useAnimatedReaction, type SharedValue } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
 
 import type { CountryShape } from '@/globe/geometry';
-import { DEBUG_ALL_VISITED, textureGlobeStyle, visitedColorFor } from '@/theme';
+import { DEBUG_ALL_VISITED, textureGlobeStyle, visitedColorFor, visitedPalette } from '@/theme';
 
 const EARTH_2048 = require('../../../assets/globe/earth-2048.jpg');
 const EARTH_4096 = require('../../../assets/globe/earth-4096.jpg');
@@ -44,6 +44,8 @@ const SWAP_HYSTERESIS = 0.2;
 const HI_RES_DELAY_MS = 1000;
 /** One pixel per country id (ids go up to 255). */
 const PALETTE_SIZE = 256;
+/** Earth-space width of TEXTURE_SPACE (texture pixels per unit = image width / this). */
+export const EARTH_SPACE_WIDTH = TEXTURE_SPACE.width;
 
 export type TextureSet = { earth: SkImage; ids: SkImage };
 
@@ -151,9 +153,10 @@ export function useTextureSet(
 }
 
 /**
- * Each country's visited colour, and the 256 × 1 colour table the shaders read: pixel
- * `id` = that country's colour, opaque if visited and transparent if not. The table is
- * only rebuilt when the visited countries change.
+ * Each country's visited colour, and the 256 × 2 colour table the shaders read: pixel
+ * (`id`, 0) = that country's colour, opaque if visited and transparent if not; row 1 =
+ * every country's colour, opaque. The table is only rebuilt when the visited countries
+ * change.
  */
 export function useVisitedPalette(countries: CountryShape[], visitedIds: ReadonlySet<string>) {
   const colors = useMemo(() => countries.map((c) => visitedColorFor(c.name)), [countries]);
@@ -162,18 +165,20 @@ export function useVisitedPalette(countries: CountryShape[], visitedIds: Readonl
     .map((c) => (DEBUG_ALL_VISITED || visitedIds.has(c.id) ? '1' : '0'))
     .join('');
   const palette = useMemo(() => {
-    const bytes = new Uint8Array(PALETTE_SIZE * 4);
+    const bytes = new Uint8Array(PALETTE_SIZE * 4 * 2);
     colorValues.forEach(([r, g, b], i) => {
-      const o = (i + 1) * 4;
-      bytes[o] = Math.round(r * 255);
-      bytes[o + 1] = Math.round(g * 255);
-      bytes[o + 2] = Math.round(b * 255);
-      bytes[o + 3] = visitedKey[i] === '1' ? 255 : 0;
+      for (const row of [0, 1]) {
+        const o = (row * PALETTE_SIZE + i + 1) * 4;
+        bytes[o] = Math.round(r * 255);
+        bytes[o + 1] = Math.round(g * 255);
+        bytes[o + 2] = Math.round(b * 255);
+        bytes[o + 3] = row === 1 || visitedKey[i] === '1' ? 255 : 0;
+      }
     });
     return Skia.Image.MakeImage(
       {
         width: PALETTE_SIZE,
-        height: 1,
+        height: 2,
         colorType: ColorType.RGBA_8888,
         alphaType: AlphaType.Unpremul,
       },
@@ -203,4 +208,10 @@ export const LAND_UNIFORMS = {
   glowWidth: selection.glowWidth,
   glowStrength: selection.glowStrength,
   edgeSoftness: borders.softness,
+  landMode: 0,
+  earthTexels: 1,
+  visitedFallback: rgba(visitedPalette.forest[0]),
 };
+
+/** Earth texture pixels per earth-space unit, for the shaders' smooth relief. */
+export const texelsOf = (textures: TextureSet) => textures.earth.width() / EARTH_SPACE_WIDTH;

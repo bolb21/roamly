@@ -54,7 +54,9 @@ const DEG = Math.PI / 180;
 type CountryFeature = Feature<Geometry, { name: string }>;
 
 function countryFeatures(topology: Topology): CountryFeature[] {
-  const object = topology.objects.countries as GeometryCollection<{ name: string }>;
+  const object = topology.objects.countries as GeometryCollection<{
+    name: string;
+  }>;
   return feature(topology, object).features as CountryFeature[];
 }
 
@@ -339,6 +341,67 @@ export function buildBorderLines(topology: Topology): GlobeGeometry {
       }
     }
     flush();
+  }
+  return geometry;
+}
+
+/**
+ * Globe geometry for pre-cut land pieces (src/globe/landCells.ts): each piece is a
+ * lon/lat ring belonging to one country, small enough to be culled on its own.
+ */
+export function geometryFromPieces(pieces: { country: number; ring: number[][] }[]): GlobeGeometry {
+  const geometry: GlobeGeometry = {
+    points: [],
+    ringStarts: [],
+    ringEnds: [],
+    ringCentres: [],
+    ringSinRadius: [],
+    ringCountry: [],
+  };
+  for (const { country, ring } of pieces) addRing(geometry, ring, country);
+  return geometry;
+}
+
+/**
+ * One country's outline (every ring, closed) cut into short open lines, for drawing
+ * the selection glow along it with buildGlobeLines: the lines simply stop at the
+ * globe's horizon, and only the pieces near the screen are projected.
+ */
+export function countryOutlineLines(outline: Feature<Polygon | MultiPolygon>): GlobeGeometry {
+  const geometry: GlobeGeometry = {
+    points: [],
+    ringStarts: [],
+    ringEnds: [],
+    ringCentres: [],
+    ringSinRadius: [],
+    ringCountry: [],
+  };
+  const g = outline.geometry;
+  const polygons = g.type === 'Polygon' ? [g.coordinates] : g.coordinates;
+  for (const polygon of polygons) {
+    for (const ring of polygon) {
+      let piece: number[][] = [];
+      for (const point of ring) {
+        const last = piece[piece.length - 1];
+        // Edges of the data, not the country: a jump across the antimeridian, a cut
+        // along it (Russia, Fiji, Antarctica) or along the South Pole's edge.
+        const cut =
+          last &&
+          (Math.abs(point[0] - last[0]) > 180 ||
+            (Math.abs(point[0]) > 179.999 && Math.abs(last[0]) > 179.999) ||
+            (point[1] < -89.999 && last[1] < -89.999));
+        if (cut) {
+          if (piece.length >= 2) addPoints(geometry, piece, 0);
+          piece = [];
+        }
+        piece.push(point);
+        if (piece.length >= LINE_PIECE_POINTS) {
+          addPoints(geometry, piece, 0);
+          piece = [point];
+        }
+      }
+      if (piece.length >= 2) addPoints(geometry, piece, 0);
+    }
   }
   return geometry;
 }

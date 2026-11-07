@@ -84,9 +84,14 @@ half4 main(float2 p) {
  *   (0 = shore, 1 = 7 km). From scripts/build-globe-textures.mjs.
  * - `ids`: country id per pixel (red × 255; 0 = sea, app country index + 1, 255 = land
  *   not in the app's list). Sampled without smoothing so ids never blend.
- * - `palette`: 256 × 1; pixel `id` holds that country's visited colour, alpha 1 if
- *   visited and 0 if not.
+ * - `palette`: 256 × 2; pixel (id, 0) holds that country's visited colour, alpha 1 if
+ *   visited and 0 if not; row 1 holds every country's colour, opaque.
  * Both textures are drawn into the same earthSize space whatever their resolution.
+ *
+ * Close up, land is drawn as sharp vector shapes filled with this same shader in a
+ * `landMode` (1 = grey land, 2 = visited land): the shape decides where land is and
+ * whether it's visited, so only the smooth relief (and the visited colour) come from
+ * the textures, and nothing turns blocky however far you zoom.
  */
 const LAND = `
 uniform shader earth;
@@ -110,6 +115,11 @@ uniform float4 glowColor;
 uniform float glowWidth;
 uniform float glowStrength;
 uniform float edgeSoftness;
+uniform float landMode;
+// Earth texture pixels per earth-space unit (1 for the 2048 texture, 2 for the 4096).
+uniform float earthTexels;
+// Visited colour for a vector-shape pixel whose country can't be found in the ids.
+uniform float4 visitedFallback;
 
 const float PI_L = 3.14159265;
 
@@ -123,6 +133,61 @@ float4 tintOf(float id) {
   if (abs(id - fadeId) < 0.5) return float4(fadeColor.rgb, fadeAmount);
   half4 c = palette.eval(float2(id + 0.5, 0.5));
   return c.a > 0.0 ? float4(float3(c.rgb) / float(c.a), float(c.a)) : float4(0.0);
+}
+
+// Shaded relief with smooth (cubic B-spline) filtering, from four smoothed samples:
+// close up, plain smoothing shows the texture's pixel grid as creases.
+float smoothRelief(float2 uv) {
+  float2 tc = uv * earthTexels - 0.5;
+  float2 i = floor(tc);
+  float2 f = tc - i;
+  float2 f2 = f * f;
+  float2 f3 = f2 * f;
+  float2 w0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) / 6.0;
+  float2 w1 = (4.0 - 6.0 * f2 + 3.0 * f3) / 6.0;
+  float2 w2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) / 6.0;
+  float2 w3 = f3 / 6.0;
+  float2 g0 = w0 + w1;
+  float2 g1 = w2 + w3;
+  float2 h0 = (i - 0.5 + w1 / g0) / earthTexels;
+  float2 h1 = (i + 1.5 + w3 / g1) / earthTexels;
+  return g0.y * (g0.x * float(earth.eval(h0).r) + g1.x * float(earth.eval(float2(h1.x, h0.y)).r))
+    + g1.y * (g0.x * float(earth.eval(float2(h0.x, h1.y)).r) + g1.x * float(earth.eval(h1).r));
+}
+
+// Is this country drawn in its visited colour in a visited vector shape?
+bool showsVisited(float id) {
+  if (id < 0.5 || id > 254.5) return false;
+  return abs(id - fadeId) < 0.5 || palette.eval(float2(id + 0.5, 0.5)).a > 0.0;
+}
+
+// The visited colour inside a visited vector shape. The shape is exact but the ids
+// are pixels, so next to a coast or an unvisited neighbour the pixel's id may be wrong:
+// then look a little further round for the visited country.
+float3 visitedTintNear(float2 uv) {
+  float id = countryAt(uv);
+  if (!showsVisited(id)) {
+    float found = 0.0;
+    for (int ring = 1; ring <= 3; ring++) {
+      for (int k = 0; k < 8; k++) {
+        if (found < 0.5) {
+          float a = float(k) * (PI_L / 4.0) + float(ring) * 0.4;
+          float c = countryAt(uv + float2(cos(a), sin(a)) * (0.45 * float(ring)));
+          if (showsVisited(c)) found = c;
+        }
+      }
+    }
+    if (found < 0.5) return visitedFallback.rgb;
+    id = found;
+  }
+  return float3(palette.eval(float2(id + 0.5, 1.5)).rgb);
+}
+
+// Land colour inside a close-up vector shape (see landMode).
+float3 vectorLand(float2 uv, float relief) {
+  float3 grey = landColor.rgb * (reliefMin + reliefRange * relief);
+  if (landMode < 1.5) return grey;
+  return visitedTintNear(uv) * (tintBase + tintRelief * relief);
 }
 
 // landAt's work, sampling the country ids s away. Returns a = -1 if no sample hit land.
@@ -208,6 +273,8 @@ uniform float sunSharpness;
 uniform float4 rimColor;
 uniform float rimStrength;
 uniform float rimPower;
+// 1 = sea only (close up: the land is drawn by vector shapes on top).
+uniform float oceanOnly;
 
 half4 main(float2 p) {
   float alpha = edgeAlpha(p);
@@ -228,10 +295,16 @@ half4 main(float2 p) {
 
   float2 perPx = float2(earthSize.x / (2.0 * PI * radius * max(cos(lat), 0.15)),
     earthSize.y / (PI * radius));
-  float4 ground = landAt(uv, t.r, perPx);
-
   // Tighten the mask a little so JPEG softening doesn't blur the coast.
-  float land = smoothstep(0.3, 0.7, t.g);
+  float land = 0.0;
+  float4 ground = float4(0.0);
+  if (landMode > 0.5) {
+    land = 1.0;
+    ground = float4(vectorLand(uv, smoothRelief(uv)), 0.0);
+  } else if (oceanOnly < 0.5) {
+    land = smoothstep(0.3, 0.7, t.g);
+    ground = landAt(uv, t.r, perPx);
+  }
   float3 color = mix(ocean, ground.rgb, land);
 
   // Clouds (faded out when zoomed in, and then not sampled at all).
@@ -257,7 +330,8 @@ half4 main(float2 p) {
 
 /**
  * The flat map: land only (see LAND), no sea, on a cropped Mercator map. Map units:
- * x = 0…mapWidth across ±180°, y = 0 at the top edge's latitude down to mapHeight.
+ * x = 0…mapWidth across 360° from longitude mapLonOrigin (radians), y = 0 at the top
+ * edge's latitude down to mapHeight.
  */
 const MAP = `${LAND}
 uniform float viewScale;
@@ -267,15 +341,20 @@ uniform float mapHeight;
 uniform float mercatorScale;
 uniform float mercatorTop;
 uniform float brightness;
+uniform float mapLonOrigin;
+// 1 = draw nothing (close up, the land is drawn by vector shapes instead).
+uniform float landHidden;
 
 half4 main(float2 p) {
+  if (landHidden > 0.5 && landMode < 0.5) return half4(0.0);
   // Screen px → map units (viewScale px per unit, map unit (0, 0) at viewOffset).
   float2 m = (p - viewOffset) / viewScale;
   if (m.x < 0.0 || m.x > mapWidth || m.y < 0.0 || m.y > mapHeight) return half4(0.0);
-  float lon = m.x / mapWidth * 2.0 * PI_L - PI_L;
+  float lon = mapLonOrigin + m.x / mapWidth * 2.0 * PI_L;
   // Inverse Mercator (mercatorScale map units per radian; mercatorTop = y of the top edge).
   float lat = 2.0 * atan(exp((mercatorTop - m.y) / mercatorScale)) - PI_L / 2.0;
   float2 uv = float2((lon / (2.0 * PI_L) + 0.5) * earthSize.x, (0.5 - lat / PI_L) * earthSize.y);
+  if (landMode > 0.5) return half4(half3(vectorLand(uv, smoothRelief(uv)) * brightness), 1.0);
   half4 t = earth.eval(uv);
   // A slightly higher threshold than the globe's: with no sea behind it, faint JPEG
   // ripples around tiny islands would show against the background.

@@ -8,6 +8,7 @@ import {
   Shader,
   Skia,
   type SkPath,
+  type Transforms3d,
 } from '@shopify/react-native-skia';
 import * as Haptics from 'expo-haptics';
 import { useEffect, useState } from 'react';
@@ -32,20 +33,36 @@ import {
 } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
 
+import { useCloseUp } from '@/components/globe/CloseUpLand';
 import { CountryBubble, type BubbleAnchor } from '@/components/globe/CountryBubble';
 import { getMapEffect } from '@/components/globe/globeShader';
 import {
   LAND_UNIFORMS,
+  texelsOf,
   useTextureSet,
   useVisitedPalette,
   type GlobeTextures,
 } from '@/components/globe/globeTextures';
 import { makeLandLayerPaint } from '@/components/globe/landLayer';
-import { GlowDot, LandTextures, SMALL_COUNTRIES } from '@/components/globe/TextureGlobeLayers';
-import { getFlatMapBorderPath, getFlatMapData, getFlatMapVectorPaths } from '@/globe/flatMap';
+import {
+  dotOpacityForSize,
+  GlowDot,
+  LandTextures,
+  SMALL_COUNTRIES,
+  SMALL_COUNTRY_TEXELS,
+} from '@/components/globe/TextureGlobeLayers';
+import {
+  getFlatMapBorderPath,
+  getFlatMapData,
+  getFlatMapVectorPaths,
+  MAP_WEST,
+  mapClipPath,
+} from '@/globe/flatMap';
 import { getGlobeData } from '@/globe/globeData';
 import { countryAt } from '@/globe/hitTest';
 import { MAP_ZOOM, zoomLimitHaptic } from '@/globe/zoom';
+
+import { MapCloseUpLand, useMapCells, type MapView } from './MapCloseUpLand';
 import {
   DEBUG_ALL_VISITED,
   GLOBE_RENDERER,
@@ -117,6 +134,10 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited, tex
   const mapEffect =
     GLOBE_RENDERER === 'texture' && !textures.failed && textureSet ? getMapEffect() : null;
   const { colors, colorValues, palette, isVisited } = useVisitedPalette(countries, visitedIds);
+  // Close up, the land is drawn as sharp vector shapes (see MapCloseUpLand.tsx).
+  const cells = useMapCells(mapEffect !== null);
+  const closeUp = useCloseUp(zoom, textureGlobeStyle.closeUp.mapZoom, cells !== null);
+  const earthTexels = textureSet ? texelsOf(textureSet) : 1;
 
   // The vector fallback's outlines, only built if the textured map can't be drawn.
   const vector = mapEffect ? null : getFlatMapVectorPaths(countries);
@@ -139,13 +160,19 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited, tex
   };
 
   // Screen = (map point - centre) × scale + middle of the screen.
-  const view = useDerivedValue(() => {
+  const view = useDerivedValue<MapView>(() => {
     const scale = fit * zoom.get();
     const x = clampCentre(centreX.get(), scale, width, map.width);
     const y = clampCentre(centreY.get(), scale, height, map.height);
-    return { scale, x, y, tx: width / 2 - x * scale, ty: height / 2 - y * scale };
+    return {
+      scale,
+      x,
+      y,
+      tx: width / 2 - x * scale,
+      ty: height / 2 - y * scale,
+    };
   });
-  const mapTransform = useDerivedValue(() => {
+  const mapTransform = useDerivedValue<Transforms3d>(() => {
     const v = view.get();
     return [{ translateX: v.tx }, { translateY: v.ty }, { scale: v.scale }];
   });
@@ -153,6 +180,14 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited, tex
   const screenTransform = useDerivedValue(() => {
     const v = view.get();
     return [{ scale: 1 / v.scale }, { translateX: -v.tx }, { translateY: -v.ty }];
+  });
+  // The map's shape on screen: its bottom edge curves round Antarctica (see flatMap.ts).
+  const mapWidth = map.width;
+  const mapHeight = map.height;
+  const clipSideY = map.clipSideY;
+  const clipPath = useDerivedValue(() => {
+    const { scale, tx, ty } = view.get();
+    return pathFrom(mapClipPath(mapWidth, mapHeight, clipSideY, scale, tx, ty));
   });
   const highlightTransform = useDerivedValue(() => {
     const v = view.get();
@@ -245,8 +280,13 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited, tex
   const mapUniforms = useDerivedValue(() => {
     const v = view.get();
     const fading = fadeIndexShared.get();
+    const vectorLand = closeUp.get();
     return {
       ...LAND_UNIFORMS,
+      earthTexels,
+      mapLonOrigin: (MAP_WEST * Math.PI) / 180,
+      // Close up the land is drawn as vector shapes instead.
+      landHidden: vectorLand ? 1 : 0,
       viewScale: v.scale,
       viewOffset: [v.tx, v.ty],
       mapWidth: map.width,
@@ -258,7 +298,7 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited, tex
       fadeId: fading + 1,
       fadeAmount: DEBUG_ALL_VISITED ? 1 : fadeProgress.get(),
       fadeColor: fading >= 0 ? colorValues[fading] : [0, 0, 0, 0],
-      selectedId: selectedIndex.get() + 1,
+      selectedId: vectorLand ? 0 : selectedIndex.get() + 1,
     };
   });
   const smallVisited = SMALL_COUNTRIES.filter((i) => isVisited[i]);
@@ -405,13 +445,34 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited, tex
         <View>
           <Canvas style={{ width, height }}>
             {mapEffect && palette && textureSet ? (
-              <>
+              <Group clip={clipPath}>
                 {/* Textured land, drawn per pixel over the whole canvas (no sea) */}
                 <Rect x={0} y={0} width={width} height={height}>
                   <Shader source={mapEffect} uniforms={mapUniforms}>
                     <LandTextures textures={textureSet} palette={palette} mipmaps />
                   </Shader>
                 </Rect>
+                {/* Close up: sharp vector land, visited colours and selection */}
+                {cells && (
+                  <MapCloseUpLand
+                    effect={mapEffect}
+                    shaderChildren={
+                      <LandTextures textures={textureSet} palette={palette} mipmaps />
+                    }
+                    uniforms={mapUniforms}
+                    cells={cells}
+                    shown={closeUp}
+                    countries={countries}
+                    isVisited={isVisited}
+                    selectedIndex={selectedIndex}
+                    fadeIndex={fadeIndexShared}
+                    fadeProgress={fadeProgress}
+                    view={view}
+                    mapTransform={mapTransform}
+                    width={width}
+                    height={height}
+                  />
+                )}
                 {/* Thin white borders from the detailed outlines */}
                 {borderPath && (
                   <Group transform={mapTransform}>
@@ -430,11 +491,12 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited, tex
                     key={i}
                     x={map.anchors[i * 2]}
                     y={map.anchors[i * 2 + 1]}
+                    size={((SMALL_COUNTRY_TEXELS[i] ?? 0) * map.width) / 2048}
                     color={colors[i]}
                     view={view}
                   />
                 ))}
-              </>
+              </Group>
             ) : (
               <>
                 <Group transform={mapTransform}>
@@ -545,15 +607,21 @@ type MapDotProps = {
   /** Position in map units. */
   x: number;
   y: number;
+  /** The country's rough width, in map units. */
+  size: number;
   color: string;
-  view: DerivedValue<{ scale: number; x: number; y: number; tx: number; ty: number }>;
+  view: DerivedValue<MapView>;
 };
 
-/** Glowing dot on a visited country too small to see in the texture. */
-function MapDot({ x, y, color, view }: MapDotProps) {
+/**
+ * Glowing dot on a visited country too small to see in the texture; it fades out once
+ * zoomed in far enough to see the country itself.
+ */
+function MapDot({ x, y, size, color, view }: MapDotProps) {
   const centre = useDerivedValue(() => {
     const v = view.get();
     return { x: v.tx + x * v.scale, y: v.ty + y * v.scale };
   });
-  return <GlowDot centre={centre} color={color} />;
+  const opacity = useDerivedValue(() => dotOpacityForSize(size * view.get().scale));
+  return <GlowDot centre={centre} color={color} opacity={opacity} />;
 }

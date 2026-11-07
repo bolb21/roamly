@@ -6,9 +6,11 @@ import countryList from './countryList.json';
 import {
   buildBorderLines,
   buildGlobeDataFromList,
+  geometryFromPieces,
   type CountryInfo,
   type GlobeData,
 } from './geometry';
+import { getLandPieces } from './landCells';
 import type { GlobeGeometry } from './projection';
 
 let cached: GlobeData | null = null;
@@ -40,4 +42,12 @@ export function getBorderLines(): GlobeGeometry {
     borderLines = buildBorderLines(countries50m as unknown as Topology);
   }
   return borderLines;
+}
+
+let landCells: GlobeGeometry | null = null;
+
+/** The pre-cut land pieces as globe geometry, for close-up vector land (built once, ~0.1 s). */
+export function getLandCellGeometry(): GlobeGeometry {
+  if (!landCells) landCells = geometryFromPieces(getLandPieces());
+  return landCells;
 }

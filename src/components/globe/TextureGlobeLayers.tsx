@@ -22,12 +22,14 @@ import { getBorderLines } from '@/globe/globeData';
 import { buildGlobeLines, PATH_SCALE, type GlobeGeometry } from '@/globe/projection';
 import { DEBUG_ALL_VISITED, textureGlobeStyle } from '@/theme';
 
+import { CloseUpLand, useCloseUp, useLandCells } from './CloseUpLand';
 import {
   EXACT,
   LAND_UNIFORMS,
   LINEAR,
   SMOOTH,
   TEXTURE_SPACE,
+  texelsOf,
   useVisitedPalette,
   type TextureSet,
 } from './globeTextures';
@@ -105,10 +107,25 @@ const EARTH_UNIFORMS = {
   cloudColor: rgba(cloudStyle.color),
 };
 
+const smallCountries = countryIds.countries.filter(
+  (c) => c.pixels2048 < textureGlobeStyle.smallCountryDots.maxPixels,
+);
 /** App country indexes too small to see in the country texture (they get a dot when visited). */
-export const SMALL_COUNTRIES = countryIds.countries
-  .filter((c) => c.pixels2048 < textureGlobeStyle.smallCountryDots.maxPixels)
-  .map((c) => c.textureId - 1);
+export const SMALL_COUNTRIES = smallCountries.map((c) => c.textureId - 1);
+/** Each small country's rough width in 2048-texture pixels, by country index. */
+export const SMALL_COUNTRY_TEXELS: Record<number, number> = Object.fromEntries(
+  smallCountries.map((c) => [c.textureId - 1, Math.sqrt(c.pixels2048)]),
+);
+
+const { fadeFrom: DOT_FADE_FROM, fadeTo: DOT_FADE_TO } = textureGlobeStyle.smallCountryDots;
+/**
+ * A small country's dot opacity when the country is `sizePx` across on screen: it
+ * fades out once the country itself is big enough to see and tap.
+ */
+export function dotOpacityForSize(sizePx: number) {
+  'worklet';
+  return Math.min(1, Math.max(0, (DOT_FADE_TO - sizePx) / (DOT_FADE_TO - DOT_FADE_FROM)));
+}
 
 /**
  * The land shaders' three textures, in the order globeShader.ts declares them. The
@@ -204,6 +221,10 @@ export function TextureGlobeLayers({
   const { colors, colorValues, palette, isVisited } = useVisitedPalette(countries, visitedIds);
   // Zoomed in, smooth vector border lines take over from the texture's borders.
   const linesOpacity = useDerivedValue(() => linesOpacityAt(zoom.get()));
+  // Closer still, the land is drawn as sharp vector shapes (see CloseUpLand.tsx).
+  const cells = useLandCells(mode === 'earth');
+  const closeUp = useCloseUp(zoom, textureGlobeStyle.closeUp.globeZoom, cells !== null);
+  const earthTexels = textures ? texelsOf(textures) : 1;
 
   const uniforms = useDerivedValue(() => {
     const m = matrix.get();
@@ -216,13 +237,17 @@ export function TextureGlobeLayers({
     };
     if (mode === 'test') return { ...view, ...TEST_UNIFORMS };
     const fading = fadeIndex.get();
+    const vectorLand = closeUp.get();
     return {
       ...view,
       ...EARTH_UNIFORMS,
+      earthTexels,
+      // Close up the sphere draws only the sea; the land and selection are vector shapes.
+      oceanOnly: vectorLand ? 1 : 0,
       fadeId: fading + 1,
       fadeAmount: DEBUG_ALL_VISITED ? 1 : fadeProgress.get(),
       fadeColor: fading >= 0 ? colorValues[fading] : [0, 0, 0, 0],
-      selectedId: selectedIndex.get() + 1,
+      selectedId: vectorLand ? 0 : selectedIndex.get() + 1,
       borderStrength: 1 - linesOpacity.get(),
       // Clouds are still, and fade out between fadeFrom and fadeTo (blurry close up).
       cloudOpacity:
@@ -238,6 +263,20 @@ export function TextureGlobeLayers({
 
   const ready = mode === 'test' || (textures !== null && palette !== null && clouds !== null);
   const smallVisited = SMALL_COUNTRIES.filter((i) => isVisited[i]);
+  const earthChildren =
+    mode === 'earth' && textures && palette && clouds ? (
+      <>
+        <LandTextures textures={textures} palette={palette} mipmaps={false} />
+        <ImageShader
+          image={clouds}
+          rect={TEXTURE_SPACE}
+          fit="fill"
+          tx="repeat"
+          ty="clamp"
+          sampling={LINEAR}
+        />
+      </>
+    ) : null;
 
   return (
     <>
@@ -245,21 +284,29 @@ export function TextureGlobeLayers({
       {ready && (
         <Circle cx={cx} cy={cy} r={drawRadius}>
           <Shader source={effect} uniforms={uniforms}>
-            {mode === 'earth' && textures && palette && clouds ? (
-              <>
-                <LandTextures textures={textures} palette={palette} mipmaps={false} />
-                <ImageShader
-                  image={clouds}
-                  rect={TEXTURE_SPACE}
-                  fit="fill"
-                  tx="repeat"
-                  ty="clamp"
-                  sampling={LINEAR}
-                />
-              </>
-            ) : null}
+            {earthChildren}
           </Shader>
         </Circle>
+      )}
+      {ready && earthChildren && cells && (
+        <CloseUpLand
+          effect={effect}
+          shaderChildren={earthChildren}
+          uniforms={uniforms}
+          cells={cells}
+          shown={closeUp}
+          countries={countries}
+          isVisited={isVisited}
+          selectedIndex={selectedIndex}
+          fadeIndex={fadeIndex}
+          fadeProgress={fadeProgress}
+          matrix={matrix}
+          radius={radius}
+          cx={cx}
+          cy={cy}
+          width={width}
+          height={height}
+        />
       )}
       {mode === 'earth' && (
         <BorderLines
@@ -276,6 +323,7 @@ export function TextureGlobeLayers({
         smallVisited.map((i) => (
           <SmallCountryDot
             key={i}
+            texels={SMALL_COUNTRY_TEXELS[i] ?? 0}
             anchor={[anchorPoints[i * 3], anchorPoints[i * 3 + 1], anchorPoints[i * 3 + 2]]}
             color={colors[i]}
             matrix={matrix}
@@ -350,6 +398,8 @@ function BorderLines({ matrix, radius, cx, cy, width, height, opacity }: BorderL
 const LINES_TRANSFORM = [{ scale: 1 / PATH_SCALE }];
 
 type DotProps = {
+  /** The country's rough width in 2048-texture pixels. */
+  texels: number;
   anchor: number[];
   color: string;
   matrix: SharedValue<number[]>;
@@ -359,7 +409,7 @@ type DotProps = {
 };
 
 /** A soft glowing dot on a visited country too small to see in the texture. */
-function SmallCountryDot({ anchor, color, matrix, radius, cx, cy }: DotProps) {
+function SmallCountryDot({ texels, anchor, color, matrix, radius, cx, cy }: DotProps) {
   const [X, Y, Z] = anchor;
   const centre = useDerivedValue(() => {
     const m = matrix.get();
@@ -369,10 +419,13 @@ function SmallCountryDot({ anchor, color, matrix, radius, cx, cy }: DotProps) {
       y: cy - r * (m[3] * X + m[4] * Y + m[5] * Z),
     };
   });
-  // Fades out as it turns towards the globe's edge, and is hidden round the back.
+  // Fades out as it turns towards the globe's edge, and is hidden round the back; and
+  // once zoomed in far enough to see the country itself.
   const opacity = useDerivedValue(() => {
     const m = matrix.get();
-    return Math.min(1, Math.max(0, (m[6] * X + m[7] * Y + m[8] * Z) / 0.15));
+    const facing = Math.min(1, Math.max(0, (m[6] * X + m[7] * Y + m[8] * Z) / 0.15));
+    const sizePx = (texels * 2 * Math.PI * radius.get()) / 2048;
+    return facing * dotOpacityForSize(sizePx);
   });
   return <GlowDot centre={centre} color={color} opacity={opacity} />;
 }

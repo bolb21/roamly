@@ -350,3 +350,38 @@ Measured by reasoning about the work, not on a phone; check the readout on devic
   so Antarctica's coast is on it. Its vector outlines are only built if the fallback
   is ever drawn.
 
+
+## Sharp close-up land, deeper zoom, map edges
+
+- **Zoom**: globe to 30×, map to 80×, enough to tap Andorra, Aruba or Grenada
+  comfortably. Zoom buttons double or halve the zoom.
+- **Close-up vector land** (`CloseUpLand.tsx`, `MapCloseUpLand.tsx`): from
+  `textureGlobeStyle.closeUp` (globe 5.5×, map 6×, switching back 0.4 below) land is no
+  longer read from the textures, which turn blocky when magnified. Instead every
+  country is pre-cut into 5° squares (`src/globe/landCells.json`, written by the
+  texture script; ~4,100 pieces) and each frame only the pieces near the screen are
+  projected into four paths in one pass: all land, visited, the country fading in or
+  out, and the selected country. They're filled with the same globe/map shader in a
+  `landMode` (1 grey, 2 visited) so relief, lighting and colours match the textured
+  view; the sphere then draws only the sea (`oceanOnly`), and the map's texture layer
+  draws nothing (`landHidden`).
+  - Relief is sampled with a smooth (cubic B-spline) filter in this mode, so the
+    texture's pixel grid doesn't show as creases. It's still 4096-pixel data, so close
+    up it's soft rather than detailed.
+  - Visited colour comes from the country texture with the vector shape deciding
+    where it's drawn; pixels whose id is wrong (coasts, unvisited neighbours) look
+    a little further round. Row 1 of the palette holds every country's colour, opaque.
+  - Pieces are cut with d3's rectangle clipping after cutting outlines at the
+    antimeridian (Russia's far east crosses it), and overlap their neighbours by 0.25°
+    (inside the country, so it can't be seen) so no hairline shows between them.
+  - Selection close up: a "plus" brighten fill plus a soft glow and crisp line along
+    the country's real outline (`countryOutlineLines` / `getFlatMapCountryLines`, which
+    skip the data's cuts along 180° and the South Pole).
+  - Cost (Node, desktop; a phone is several times slower): globe 0.2–2 ms per frame,
+    map 0.05–2.5 ms, dearest over Europe right at the switch zoom, cheaper further in.
+- **Small-country dots** fade out once the country itself is 14–24 px across.
+- **Flat map**: starts at 169°W (just east of Russia's far tip), so Russia is whole on
+  the right and Alaska on the left; the shader adds `mapLonOrigin`. Cropped to
+  84°N–78°S with an oval bottom edge (half an ellipse from 66°S at the sides,
+  `mapClipPath`), so Antarctica is rounded off rather than cut straight. Taps below the
+  edge select nothing.

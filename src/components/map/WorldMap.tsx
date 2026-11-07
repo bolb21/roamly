@@ -104,8 +104,13 @@ const MAP_LINES_FULL_ZOOM = 5;
 const BORDER_LINES_DELAY_MS = 1800;
 
 const EMPTY_PATH = Skia.Path.Make();
-/** A Skia path from SVG path text; empty (rather than a crash) if Skia can't read it. */
+/**
+ * A Skia path from SVG path text; empty (rather than a crash) if Skia can't read it.
+ * A worklet, as the map's clip path is rebuilt with it on the UI thread every frame
+ * (calling a plain function there crashes the app).
+ */
 const pathFrom = (svg: string) => {
+  'worklet';
   if (!svg) return EMPTY_PATH;
   try {
     return Skia.Path.MakeFromSVGString(svg) ?? EMPTY_PATH;

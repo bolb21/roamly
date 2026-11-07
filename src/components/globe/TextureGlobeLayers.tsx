@@ -327,7 +327,12 @@ function BorderLines({ matrix, radius, cx, cy, width, height, opacity }: BorderL
       lines && opacity.get() > 0
         ? buildGlobeLines(lines, matrix.get(), cx, cy, radius.get(), width, height)
         : EMPTY_LINES;
-    return Skia.Path.MakeFromSVGString(svg) ?? Skia.Path.Make();
+    // On the phone Skia throws on path text it can't read; draw nothing rather than crash.
+    try {
+      return Skia.Path.MakeFromSVGString(svg) ?? Skia.Path.Make();
+    } catch {
+      return Skia.Path.Make();
+    }
   });
   return (
     <Path

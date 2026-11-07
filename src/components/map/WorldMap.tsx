@@ -87,8 +87,15 @@ const MAP_LINES_FULL_ZOOM = 5;
 const BORDER_LINES_DELAY_MS = 1800;
 
 const EMPTY_PATH = Skia.Path.Make();
-const pathFrom = (svg: string) =>
-  svg ? (Skia.Path.MakeFromSVGString(svg) ?? EMPTY_PATH) : EMPTY_PATH;
+/** A Skia path from SVG path text; empty (rather than a crash) if Skia can't read it. */
+const pathFrom = (svg: string) => {
+  if (!svg) return EMPTY_PATH;
+  try {
+    return Skia.Path.MakeFromSVGString(svg) ?? EMPTY_PATH;
+  } catch {
+    return EMPTY_PATH;
+  }
+};
 
 /**
  * Flat world map with the same land as the textured globe (relief, borders, visited

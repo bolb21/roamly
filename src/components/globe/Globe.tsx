@@ -102,7 +102,7 @@ const GLOW_FADE_ZOOM = 1.6;
 /** Overlay with UI-thread fps and per-frame path build time. Set to false before demos. */
 const SHOW_PERF = true;
 /** Shown in the perf overlay, to confirm the phone is running the latest code. */
-const BUILD_LABEL = 'all countries v1';
+const BUILD_LABEL = 'all countries v2';
 
 const TRANSPARENT = 'rgba(0,0,0,0)';
 /** Halo gradient stops: solid at the sphere's edge, fading out over the halo's width. */
@@ -119,7 +119,12 @@ const LAND_PATH_TRANSFORM = [{ scale: 1 / PATH_SCALE }];
 /** Turns a globe SVG path string into a Skia path (each Path sets its own fill type). */
 function toSkPath(svg: string): SkPath {
   'worklet';
-  return Skia.Path.MakeFromSVGString(svg) ?? Skia.Path.Make();
+  // On the phone Skia throws on path text it can't read; draw nothing rather than crash.
+  try {
+    return Skia.Path.MakeFromSVGString(svg) ?? Skia.Path.Make();
+  } catch {
+    return Skia.Path.Make();
+  }
 }
 const HIGHLIGHT_TRANSFORM = [
   { translateX: -globeStyle.outlineHighlight.offset },

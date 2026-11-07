@@ -214,6 +214,10 @@ export function buildGlobeLines(
     }
 
     let penDown = false;
+    // Whether the current line has its 'l' yet: it's only written with the line's
+    // second point, so a lone visible point never leaves an 'l' with nothing after it
+    // (invalid path text, which makes Skia throw on the phone).
+    let hasLine = false;
     let lastX = 0;
     let lastY = 0;
     const end = geo.ringEnds[ri];
@@ -229,10 +233,12 @@ export function buildGlobeLines(
       const px = Math.round(ox + rr * (m00 * X + m01 * Y + m02 * Z));
       const py = Math.round(oy - rr * (m10 * X + m11 * Y + m12 * Z));
       if (!penDown) {
-        out.push('M' + px + ' ' + py + 'l');
+        out.push('M' + px + ' ' + py + ' ');
         penDown = true;
+        hasLine = false;
       } else if (Math.abs(px - lastX) + Math.abs(py - lastY) >= MIN_STEP || k === end - 1) {
-        out.push(px - lastX + ' ' + (py - lastY) + ' ');
+        out.push((hasLine ? '' : 'l') + (px - lastX) + ' ' + (py - lastY) + ' ');
+        hasLine = true;
       } else {
         continue;
       }

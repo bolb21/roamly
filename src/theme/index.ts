@@ -65,14 +65,43 @@ export const textureGlobeStyle = {
   sun: { color: '#CFE8FF', strength: 0.28, sharpness: 14 },
   /** Blue glow towards the globe's edge. Higher `power` = thinner glow. */
   rim: { color: '#5FB8FF', strength: 0.55, power: 3 },
-  /** Starfield behind the globe: count, dot size (px) and opacity per layer. */
-  stars: [
-    { count: 140, size: 1, opacity: 0.45 },
-    { count: 45, size: 1.6, opacity: 0.7 },
-    { count: 12, size: 2.4, opacity: 0.9 },
-  ],
-  /** Stars fade out over this many px at the top and bottom of the globe area. */
-  starEdgeFade: 60,
+  /**
+   * Night sky behind the globe (see Starfield.tsx). Positions are fractions of the
+   * canvas; sizes in px; strengths 0–1. It fades out over `edgeFade` px at the top and
+   * bottom, so UI over the canvas edge shows no line.
+   */
+  starfield: {
+    edgeFade: 60,
+    /** Plain stars: count, size and opacity per layer. */
+    stars: [
+      { count: 110, size: 1, opacity: 0.4 },
+      { count: 40, size: 1.5, opacity: 0.65 },
+      { count: 10, size: 2.1, opacity: 0.9 },
+    ],
+    /** A few bright stars with a soft blue halo. */
+    bright: {
+      count: 6,
+      core: 1.4,
+      halo: 10,
+      color: '#F4F8FF',
+      haloColor: 'rgba(150, 190, 255, 0.5)',
+    },
+    /** The galaxy band (like the Milky Way) runs diagonally from `from` to `to`. */
+    band: { from: [-0.1, 0.95], to: [1.1, 0.2], width: 0.11 },
+    /**
+     * Faint blue dust: `count` specks, `inBand` share of them along the band, the rest
+     * scattered. Each speck gets one of `sizes` and one of `opacities`.
+     */
+    dust: {
+      count: 1300,
+      inBand: 0.8,
+      color: '#A6C0FF',
+      sizes: [0.8, 1.2, 1.8],
+      opacities: [0.16, 0.3, 0.5],
+    },
+    /** Very soft glow along the band. */
+    glow: { color: 'rgba(80, 125, 235, 0.24)', thickness: 0.32 },
+  },
   /**
    * Zooms at which the sharper 4096 textures are used (the 2048 ones below). The map's
    * zoom 1 shows the whole map, so its threshold is higher.
@@ -122,12 +151,6 @@ export const textureGlobeStyle = {
    * `glowWidth` px wide on each side of the outline, with a crisp `lineWidth` px line.
    */
   selectionLines: { lineWidth: 1.3, lineOpacity: 0.8, glowBlur: 2.5, glowOpacity: 0.6 },
-  /**
-   * Countries smaller than `maxPixels` in the 2048 country texture get a glowing dot at
-   * their centre when visited, so they're never invisible. Sizes in px. Zoomed in far
-   * enough to see the country itself (about `fadeFrom`–`fadeTo` px across), the dot fades out.
-   */
-  smallCountryDots: { maxPixels: 30, radius: 2.2, glowRadius: 5, fadeFrom: 14, fadeTo: 24 },
   /** Mapping test colours: 15° squares, equator/prime meridian, and the two markers. */
   test: {
     light: '#DCE6F2',

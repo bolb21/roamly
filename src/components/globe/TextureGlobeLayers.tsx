@@ -1,13 +1,8 @@
 import {
-  BlurMask,
   Circle,
-  Group,
   Image,
   ImageShader,
-  LinearGradient,
   Path,
-  Points,
-  Rect,
   Shader,
   Skia,
   type SkImage,
@@ -16,7 +11,6 @@ import {
 import { useEffect, useState } from 'react';
 import { useDerivedValue, type SharedValue } from 'react-native-reanimated';
 
-import countryIds from '../../../assets/globe/country-ids.json';
 import type { CountryShape } from '@/globe/geometry';
 import { getBorderLines } from '@/globe/globeData';
 import { buildGlobeLines, PATH_SCALE, type GlobeGeometry } from '@/globe/projection';
@@ -48,8 +42,6 @@ type Props = {
   /** The globe's zoom (the clouds fade out as it zooms in). */
   zoom: SharedValue<number>;
   countries: CountryShape[];
-  /** Each country's anchor as a unit vector (x,y,z flattened, by country index). */
-  anchorPoints: number[];
   visitedIds: ReadonlySet<string>;
   /** Selected country index, or -1. */
   selectedIndex: SharedValue<number>;
@@ -106,26 +98,6 @@ const EARTH_UNIFORMS = {
   rimPower: rim.power,
   cloudColor: rgba(cloudStyle.color),
 };
-
-const smallCountries = countryIds.countries.filter(
-  (c) => c.pixels2048 < textureGlobeStyle.smallCountryDots.maxPixels,
-);
-/** App country indexes too small to see in the country texture (they get a dot when visited). */
-export const SMALL_COUNTRIES = smallCountries.map((c) => c.textureId - 1);
-/** Each small country's rough width in 2048-texture pixels, by country index. */
-export const SMALL_COUNTRY_TEXELS: Record<number, number> = Object.fromEntries(
-  smallCountries.map((c) => [c.textureId - 1, Math.sqrt(c.pixels2048)]),
-);
-
-const { fadeFrom: DOT_FADE_FROM, fadeTo: DOT_FADE_TO } = textureGlobeStyle.smallCountryDots;
-/**
- * A small country's dot opacity when the country is `sizePx` across on screen: it
- * fades out once the country itself is big enough to see and tap.
- */
-export function dotOpacityForSize(sizePx: number) {
-  'worklet';
-  return Math.min(1, Math.max(0, (DOT_FADE_TO - sizePx) / (DOT_FADE_TO - DOT_FADE_FROM)));
-}
 
 /**
  * The land shaders' three textures, in the order globeShader.ts declares them. The
@@ -206,7 +178,6 @@ export function TextureGlobeLayers({
   clouds,
   zoom,
   countries,
-  anchorPoints,
   visitedIds,
   selectedIndex,
   fadeIndex,
@@ -218,7 +189,7 @@ export function TextureGlobeLayers({
   width,
   height,
 }: Props) {
-  const { colors, colorValues, palette, isVisited } = useVisitedPalette(countries, visitedIds);
+  const { colorValues, palette, isVisited } = useVisitedPalette(countries, visitedIds);
   // Zoomed in, smooth vector border lines take over from the texture's borders.
   const linesOpacity = useDerivedValue(() => linesOpacityAt(zoom.get()));
   // Closer still, the land is drawn as sharp vector shapes (see CloseUpLand.tsx).
@@ -262,7 +233,6 @@ export function TextureGlobeLayers({
   const drawRadius = useDerivedValue(() => radius.get() + 1);
 
   const ready = mode === 'test' || (textures !== null && palette !== null && clouds !== null);
-  const smallVisited = SMALL_COUNTRIES.filter((i) => isVisited[i]);
   const earthChildren =
     mode === 'earth' && textures && palette && clouds ? (
       <>
@@ -319,19 +289,6 @@ export function TextureGlobeLayers({
           opacity={linesOpacity}
         />
       )}
-      {mode === 'earth' &&
-        smallVisited.map((i) => (
-          <SmallCountryDot
-            key={i}
-            texels={SMALL_COUNTRY_TEXELS[i] ?? 0}
-            anchor={[anchorPoints[i * 3], anchorPoints[i * 3 + 1], anchorPoints[i * 3 + 2]]}
-            color={colors[i]}
-            matrix={matrix}
-            radius={radius}
-            cx={cx}
-            cy={cy}
-          />
-        ))}
     </>
   );
 }
@@ -396,108 +353,3 @@ function BorderLines({ matrix, radius, cx, cy, width, height, opacity }: BorderL
   );
 }
 const LINES_TRANSFORM = [{ scale: 1 / PATH_SCALE }];
-
-type DotProps = {
-  /** The country's rough width in 2048-texture pixels. */
-  texels: number;
-  anchor: number[];
-  color: string;
-  matrix: SharedValue<number[]>;
-  radius: SharedValue<number>;
-  cx: number;
-  cy: number;
-};
-
-/** A soft glowing dot on a visited country too small to see in the texture. */
-function SmallCountryDot({ texels, anchor, color, matrix, radius, cx, cy }: DotProps) {
-  const [X, Y, Z] = anchor;
-  const centre = useDerivedValue(() => {
-    const m = matrix.get();
-    const r = radius.get();
-    return {
-      x: cx + r * (m[0] * X + m[1] * Y + m[2] * Z),
-      y: cy - r * (m[3] * X + m[4] * Y + m[5] * Z),
-    };
-  });
-  // Fades out as it turns towards the globe's edge, and is hidden round the back; and
-  // once zoomed in far enough to see the country itself.
-  const opacity = useDerivedValue(() => {
-    const m = matrix.get();
-    const facing = Math.min(1, Math.max(0, (m[6] * X + m[7] * Y + m[8] * Z) / 0.15));
-    const sizePx = (texels * 2 * Math.PI * radius.get()) / 2048;
-    return facing * dotOpacityForSize(sizePx);
-  });
-  return <GlowDot centre={centre} color={color} opacity={opacity} />;
-}
-
-/** The small-country dot itself: a soft glow, a solid centre and a light edge. */
-export function GlowDot({
-  centre,
-  color,
-  opacity,
-}: {
-  centre: SharedValue<{ x: number; y: number }>;
-  color: string;
-  opacity?: SharedValue<number>;
-}) {
-  const { radius: dotRadius, glowRadius } = textureGlobeStyle.smallCountryDots;
-  return (
-    <Group opacity={opacity}>
-      <Circle c={centre} r={glowRadius} color={color} opacity={0.7}>
-        <BlurMask blur={glowRadius * 0.6} style="normal" />
-      </Circle>
-      <Circle c={centre} r={dotRadius} color={color} />
-      <Circle
-        c={centre}
-        r={dotRadius}
-        color="rgba(255,255,255,0.6)"
-        style="stroke"
-        strokeWidth={0.8}
-      />
-    </Group>
-  );
-}
-
-/** Repeatable pseudo-random number in [0, 1) for a given index. */
-function random(i: number) {
-  const x = Math.sin(i * 12.9898 + 78.233) * 43758.5453;
-  return x - Math.floor(x);
-}
-
-/** A still starfield across the canvas (drawn behind the globe), fading out at the top and bottom edges. */
-export function Starfield({ width, height }: { width: number; height: number }) {
-  const fade = Math.min(0.45, textureGlobeStyle.starEdgeFade / height);
-  const [layers] = useState(() =>
-    textureGlobeStyle.stars.map((layer, l) => ({
-      ...layer,
-      points: Array.from({ length: layer.count }, (_, i) => ({
-        x: random(l * 1000 + i * 2) * width,
-        y: random(l * 1000 + i * 2 + 1) * height,
-      })),
-    })),
-  );
-  return (
-    <Group layer>
-      {layers.map((layer) => (
-        <Points
-          key={layer.size}
-          points={layer.points}
-          mode="points"
-          color="white"
-          opacity={layer.opacity}
-          strokeWidth={layer.size}
-          strokeCap="round"
-        />
-      ))}
-      {/* Fades the stars out towards the edges, so UI over the canvas edge shows no line. */}
-      <Rect x={0} y={0} width={width} height={height} blendMode="dstIn">
-        <LinearGradient
-          start={{ x: 0, y: 0 }}
-          end={{ x: 0, y: height }}
-          colors={['transparent', 'white', 'white', 'transparent']}
-          positions={[0, fade, 1 - fade, 1]}
-        />
-      </Rect>
-    </Group>
-  );
-}

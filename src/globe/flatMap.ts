@@ -1,9 +1,7 @@
 // Flat (2D) world map data: the same countries as the globe, on a Mercator map (the
 // familiar web-map layout) cropped to MAP_NORTH…MAP_SOUTH: nearer square than a
 // whole-world map. Its left edge is MAP_WEST, just east of Russia's far tip, so
-// Russia sits whole on the right. The map's bottom edge is an oval curve, so
-// Antarctica's stretched Mercator strip is rounded off rather than cut straight
-// (see mapClipPath).
+// Russia sits whole on the right. Antarctica is left off (the map stops at 60°S).
 //
 // The textured map is drawn by a shader (globeShader.ts) using mercatorScale,
 // mercatorTop and MAP_WEST; close up, land is drawn from the pre-cut pieces
@@ -22,15 +20,14 @@ import type { FlatGeometry } from './projection';
 
 /** Width of the map in map units; screen size is applied by the map view. */
 export const FLAT_MAP_WIDTH = 1000;
-/** Latitudes of the map's top and bottom edges (northern Greenland to inland Antarctica). */
+/**
+ * Latitudes of the map's top and bottom edges: northern Greenland, and just south of
+ * the South Sandwich Islands (Antarctica is left off the map).
+ */
 export const MAP_NORTH = 84;
-export const MAP_SOUTH = -78;
+export const MAP_SOUTH = -60;
 /** The map's left edge (longitude): just east of Russia's far tip, at the land grid's origin. */
 export const MAP_WEST = LAND_CELL_ORIGIN;
-/** Antarctica is rounded off: the map's bottom edge curves up to this latitude at the sides. */
-const ROUNDED_EDGE_LAT = -66;
-/** Control point distance for a quarter ellipse drawn as a cubic curve. */
-const ELLIPSE_K = 0.5523;
 
 export type FlatMapData = {
   width: number;
@@ -41,8 +38,6 @@ export type FlatMapData = {
   mercatorTop: number;
   /** The map's outline (its edges). */
   outlinePath: string;
-  /** Map y where the bottom edge's oval curve meets the map's sides (see mapClipPath). */
-  clipSideY: number;
   /** Lines of latitude and longitude every 10°. */
   graticulePath: string;
   /** Each country's anchor in map units (x,y flattened, by country index). */
@@ -85,7 +80,6 @@ export function getFlatMapData(countries: CountryShape[]): FlatMapData {
   }
 
   const W = FLAT_MAP_WIDTH;
-  const sideY = top - scale * mercatorY(ROUNDED_EDGE_LAT);
 
   cached = {
     width: W,
@@ -93,14 +87,10 @@ export function getFlatMapData(countries: CountryShape[]): FlatMapData {
     unitsPerRadian: scale,
     mercatorTop: top,
     outlinePath: `M0 0H${W}V${height}H0Z`,
-    clipSideY: sideY,
     graticulePath: path(geoGraticule10()) ?? '',
     anchors,
     invert: (x, y) => {
       if (x < 0 || x > W || y < 0 || y > height) return null;
-      // Below the rounded bottom edge (roughly half an ellipse, see mapClipPath).
-      const u = (2 * x) / W - 1;
-      if (y > sideY + (height - sideY) * Math.sqrt(Math.max(0, 1 - u * u))) return null;
       const lonLat = projection.invert?.([x, y]);
       if (!lonLat || !Number.isFinite(lonLat[0]) || !Number.isFinite(lonLat[1])) return null;
       return [lonLat[0], lonLat[1]];
@@ -110,30 +100,18 @@ export function getFlatMapData(countries: CountryShape[]): FlatMapData {
 }
 
 /**
- * The map's shape on screen as an SVG path, at screen = map × scale + (tx, ty): a
- * rectangle whose bottom edge is half an ellipse, from `sideY` at the sides down to
- * `height` in the middle (map units).
+ * The map's rectangle on screen as an SVG path, at screen = map × scale + (tx, ty), for
+ * clipping what's drawn (close-up land pieces reach past the map's bottom edge).
  */
 export function mapClipPath(
   width: number,
   height: number,
-  sideY: number,
   scale: number,
   tx: number,
   ty: number,
 ): string {
   'worklet';
-  const right = tx + width * scale;
-  const middle = tx + (width / 2) * scale;
-  const halfWidth = (width / 2) * scale;
-  const side = ty + sideY * scale;
-  const bottom = ty + height * scale;
-  const k = ELLIPSE_K;
-  return (
-    `M${tx} ${ty}H${right}V${side}` +
-    `C${right} ${side + k * (bottom - side)} ${middle + k * halfWidth} ${bottom} ${middle} ${bottom}` +
-    `C${middle - k * halfWidth} ${bottom} ${tx} ${side + k * (bottom - side)} ${tx} ${side}Z`
-  );
+  return `M${tx} ${ty}H${tx + width * scale}V${ty + height * scale}H${tx}Z`;
 }
 
 let borderPath: string | null = null;
@@ -220,6 +198,8 @@ export function getFlatMapCells(): FlatGeometry {
       ringCountry: [],
     };
     for (const { country, cellX, ring } of getLandPieces()) {
+      // Wholly south of the map's bottom edge (Antarctica): never drawn.
+      if (ring.every(([, lat]) => lat < MAP_SOUTH)) continue;
       const shift = cellX < 0 ? 360 : 0;
       const start = geometry.points.length / 2;
       let minX = Infinity;

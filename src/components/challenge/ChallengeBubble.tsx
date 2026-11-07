@@ -27,7 +27,7 @@ export function ChallengeBubble({
   onExpand,
 }: Props) {
   return (
-    <View style={styles.wrapper}>
+    <View style={[styles.wrapper, expanded && styles.wrapperExpanded]}>
       {expanded && (
         <Pressable
           onPress={onOpenChallenge}
@@ -74,6 +74,11 @@ const styles = StyleSheet.create({
   wrapper: {
     alignItems: 'flex-end',
     maxWidth: 230,
+  },
+  // A set width when open: the row it sits in floats over the globe, so without one
+  // the text had no room and wrapped into a tall, narrow strip.
+  wrapperExpanded: {
+    width: 230,
   },
   bubble: {
     flexDirection: 'row',

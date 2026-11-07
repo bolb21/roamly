@@ -379,9 +379,16 @@ Measured by reasoning about the work, not on a phone; check the readout on devic
     skip the data's cuts along 180° and the South Pole).
   - Cost (Node, desktop; a phone is several times slower): globe 0.2–2 ms per frame,
     map 0.05–2.5 ms, dearest over Europe right at the switch zoom, cheaper further in.
-- **Small-country dots** fade out once the country itself is 14–24 px across.
 - **Flat map**: starts at 169°W (just east of Russia's far tip), so Russia is whole on
   the right and Alaska on the left; the shader adds `mapLonOrigin`. Cropped to
-  84°N–78°S with an oval bottom edge (half an ellipse from 66°S at the sides,
-  `mapClipPath`), so Antarctica is rounded off rather than cut straight. Taps below the
-  edge select nothing.
+  84°N–60°S: Antarctica is left off for now (South Georgia and the South Sandwich
+  Islands stay on). Drawing is clipped to the map's rectangle (`mapClipPath`).
+- **No visited dots** on tiny countries any more: with the deeper zoom you can see and
+  tap the country itself.
+- **Challenge bubble** starts collapsed (just the monkey badge); tapping it opens the
+  bubble, which now has a set width (in the floating top row it had none, so its text
+  wrapped into a tall, narrow strip).
+- **Starfield** (`Starfield.tsx`, theme `starfield`, reference
+  `docs/design/stars-ref-1.jpeg`): faint blue galaxy dust along a diagonal band with a
+  soft glow, plain stars, and a few bright stars with halos. Points and gradients only
+  (no blur), since the canvas redraws every frame while the globe moves.

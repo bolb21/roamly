@@ -36,7 +36,8 @@ export function VisitedScreen() {
   const { visitedIds, toggleVisited } = useVisitedCountries();
 
   // Transient UI state
-  const [bubbleExpanded, setBubbleExpanded] = useState(true);
+  // The challenge bubble starts collapsed (just the monkey badge); tap it to open.
+  const [bubbleExpanded, setBubbleExpanded] = useState(false);
   const [challengeOpen, setChallengeOpen] = useState(false);
   const [globeArea, setGlobeArea] = useState({ width: 0, height: 0 });
   const [mode, setMode] = useState<ViewMode>('globe');

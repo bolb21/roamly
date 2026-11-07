@@ -42,7 +42,7 @@ import {
 } from '@/components/globe/globeTextures';
 import { makeLandLayerPaint } from '@/components/globe/landLayer';
 import { GlowDot, LandTextures, SMALL_COUNTRIES } from '@/components/globe/TextureGlobeLayers';
-import { getFlatMapBorderPath, getFlatMapData } from '@/globe/flatMap';
+import { getFlatMapBorderPath, getFlatMapData, getFlatMapVectorPaths } from '@/globe/flatMap';
 import { getGlobeData } from '@/globe/globeData';
 import { countryAt } from '@/globe/hitTest';
 import { MAP_ZOOM, zoomLimitHaptic } from '@/globe/zoom';
@@ -79,8 +79,10 @@ const VISITED_FADE_MS = 500;
  */
 const REFERENCE_PX_PER_RADIAN = 150;
 const NO_COUNTRY = -1;
-/** Border line copies one map-width west and east, so the wrap-around joins up. */
-const WRAP_COPIES = [-1, 0, 1];
+/** Map border lines are this share of their full width when the whole map shows… */
+const MAP_LINES_MIN = 0.35;
+/** …growing to full width by this zoom. */
+const MAP_LINES_FULL_ZOOM = 5;
 /** The detailed border lines are built this long after the map first appears. */
 const BORDER_LINES_DELAY_MS = 1800;
 
@@ -100,55 +102,39 @@ const pathFrom = (svg: string) =>
 export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited, textures }: Props) {
   const { countries } = getGlobeData();
   const map = getFlatMapData(countries);
-  // Screen px per map unit at zoom 1 (the whole map fits the width).
-  const fit = width / map.width;
-
-  // Open zoomed in so the map fills the height (the whole map is a pinch away).
-  useEffect(() => {
-    const fillHeight = height / (map.height * fit);
-    if (zoom.get() < fillHeight) zoom.set(Math.min(fillHeight, MAP_ZOOM.max));
-  }, [fit, height, map.height, zoom]);
+  // Screen px per map unit at zoom 1: the whole map fits, clear of the screen's edges.
+  const margin = textureGlobeStyle.mapMargin;
+  const fit = Math.min((width - 2 * margin) / map.width, (height - 2 * margin) / map.height);
 
   const textureSet = useTextureSet(textures, zoom, textureGlobeStyle.mapHiResZoom);
   const mapEffect =
     GLOBE_RENDERER === 'texture' && !textures.failed && textureSet ? getMapEffect() : null;
   const { colors, colorValues, palette, isVisited } = useVisitedPalette(countries, visitedIds);
 
-  const [staticPaths] = useState(() => ({
-    land: pathFrom(map.landPath),
+  // The vector fallback's outlines, only built if the textured map can't be drawn.
+  const vector = mapEffect ? null : getFlatMapVectorPaths(countries);
+  const staticPaths = {
+    land: pathFrom(vector?.landPath ?? ''),
     outline: pathFrom(map.outlinePath),
-    graticule: pathFrom(map.graticulePath),
-  }));
+    graticule: pathFrom(vector ? map.graticulePath : ''),
+  };
 
   // --- View: the map point at the middle of the screen, and the zoom ---
   const centreX = useSharedValue(map.width / 2);
   const centreY = useSharedValue(map.height / 2);
 
-  /** Keeps the map covering the screen top to bottom (or centred, when it's shorter). */
+  /** Keeps the map covering the screen (or centred, when it's smaller than the screen). */
   const clampCentre = (value: number, scale: number, viewSize: number, mapSize: number) => {
     'worklet';
     const half = viewSize / (2 * scale);
     if (half * 2 >= mapSize) return mapSize / 2;
     return Math.min(mapSize - half, Math.max(half, value));
   };
-  /**
-   * The map wraps round east–west (it repeats every map.width), so the x of the
-   * middle of the screen is kept in 0…map.width.
-   */
-  const wrapX = (value: number) => {
-    'worklet';
-    return ((value % map.width) + map.width) % map.width;
-  };
-  /** The copy of map x-position `x` nearest the map point at the middle of the screen. */
-  const nearestCopy = (x: number, centre: number) => {
-    'worklet';
-    return x + map.width * Math.round((centre - x) / map.width);
-  };
 
   // Screen = (map point - centre) × scale + middle of the screen.
   const view = useDerivedValue(() => {
     const scale = fit * zoom.get();
-    const x = wrapX(centreX.get());
+    const x = clampCentre(centreX.get(), scale, width, map.width);
     const y = clampCentre(centreY.get(), scale, height, map.height);
     return { scale, x, y, tx: width / 2 - x * scale, ty: height / 2 - y * scale };
   });
@@ -199,11 +185,13 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited, tex
 
   const visitedPath = pathFrom(
     countries
-      .map((c, i) => (visitedIds.has(c.id) && i !== fadeIndex ? map.countryPaths[i] : ''))
+      .map((c, i) =>
+        vector && visitedIds.has(c.id) && i !== fadeIndex ? vector.countryPaths[i] : '',
+      )
       .join(''),
   );
-  const fadePath = pathFrom(fadeIndex === null ? '' : map.countryPaths[fadeIndex]);
-  const selectedPath = pathFrom(selected === null ? '' : map.countryPaths[selected]);
+  const fadePath = pathFrom(vector && fadeIndex !== null ? vector.countryPaths[fadeIndex] : '');
+  const selectedPath = pathFrom(vector && selected !== null ? vector.countryPaths[selected] : '');
 
   const selectCountry = (index: number | null) => {
     setSelected(index);
@@ -213,7 +201,7 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited, tex
     // the view keeps the map covering the screen top to bottom).
     const fromX = view.get().x;
     centreX.set(fromX);
-    centreX.set(withTiming(nearestCopy(map.anchors[index * 2], fromX), CENTRE_TIMING));
+    centreX.set(withTiming(map.anchors[index * 2], CENTRE_TIMING));
     centreY.set(withTiming(map.anchors[index * 2 + 1], CENTRE_TIMING));
   };
 
@@ -277,16 +265,19 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited, tex
     );
     return () => clearTimeout(id);
   }, []);
-  const borderLineWidth = useDerivedValue(
-    () => textureGlobeStyle.borders.lines.width / view.get().scale,
-  );
+  // Thinner when zoomed out (the whole map is small), full width from mapLinesFull up.
+  const borderLineWidth = useDerivedValue(() => {
+    const grow = Math.min(1, Math.max(0, (zoom.get() - 1) / (MAP_LINES_FULL_ZOOM - 1)));
+    const px = textureGlobeStyle.borders.lines.width * (MAP_LINES_MIN + (1 - MAP_LINES_MIN) * grow);
+    return px / view.get().scale;
+  });
 
   // Screen position of the selected country's anchor, for the name bubble.
   const bubbleAnchor = useDerivedValue<BubbleAnchor>(() => {
     const sel = selectedIndex.get();
     if (sel === NO_COUNTRY) return { x: 0, y: 0, visible: false };
     const v = view.get();
-    const x = v.tx + nearestCopy(map.anchors[sel * 2], v.x) * v.scale;
+    const x = v.tx + map.anchors[sel * 2] * v.scale;
     const y = v.ty + map.anchors[sel * 2 + 1] * v.scale;
     return { x, y, visible: x >= 0 && x <= width && y >= 0 && y <= height };
   });
@@ -310,7 +301,7 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited, tex
     onUpdate: (e) => {
       'worklet';
       const scale = fit * zoom.get();
-      centreX.set(wrapX(centreX.get() - e.changeX / scale));
+      centreX.set(clampCentre(centreX.get() - e.changeX / scale, scale, width, map.width));
       centreY.set(clampCentre(centreY.get() - e.changeY / scale, scale, height, map.height));
     },
     onDeactivate: (e) => {
@@ -318,7 +309,16 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited, tex
       const scale = fit * zoom.get();
       const halfH = height / (2 * scale);
       // No east–west limit: the map wraps round (the view wraps the value).
-      centreX.set(withDecay({ velocity: -e.velocityX / scale, deceleration: DECELERATION }));
+      const halfW = width / (2 * scale);
+      if (halfW * 2 < map.width) {
+        centreX.set(
+          withDecay({
+            velocity: -e.velocityX / scale,
+            deceleration: DECELERATION,
+            clamp: [halfW, map.width - halfW],
+          }),
+        );
+      }
       if (halfH * 2 < map.height) {
         centreY.set(
           withDecay({
@@ -352,12 +352,13 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited, tex
       // Keep the map point between the fingers in place. Read the live values (not
       // `view`, which may not include a pan applied earlier this frame).
       const before = fit * zoom.get();
-      const focusX = wrapX(centreX.get()) + (e.focalX - width / 2) / before;
+      const focusX =
+        clampCentre(centreX.get(), before, width, map.width) + (e.focalX - width / 2) / before;
       const focusY =
         clampCentre(centreY.get(), before, height, map.height) + (e.focalY - height / 2) / before;
       const scale = fit * nextZoom;
       zoom.set(nextZoom);
-      centreX.set(wrapX(focusX - (e.focalX - width / 2) / scale));
+      centreX.set(clampCentre(focusX - (e.focalX - width / 2) / scale, scale, width, map.width));
       centreY.set(clampCentre(focusY - (e.focalY - height / 2) / scale, scale, height, map.height));
     },
     onDeactivate: () => {
@@ -401,25 +402,20 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited, tex
                 {/* Textured land, drawn per pixel over the whole canvas (no sea) */}
                 <Rect x={0} y={0} width={width} height={height}>
                   <Shader source={mapEffect} uniforms={mapUniforms}>
-                    <LandTextures textures={textureSet} palette={palette} />
+                    <LandTextures textures={textureSet} palette={palette} mipmaps />
                   </Shader>
                 </Rect>
-                {/* Thin white borders from the detailed outlines, one copy each side so
-                    the wrap-around joins up (off-screen copies cost almost nothing). */}
+                {/* Thin white borders from the detailed outlines */}
                 {borderPath && (
                   <Group transform={mapTransform}>
-                    {WRAP_COPIES.map((copy) => (
-                      <Group key={copy} transform={[{ translateX: copy * map.width }]}>
-                        <Path
-                          path={borderPath}
-                          color={textureGlobeStyle.borders.lines.color}
-                          style="stroke"
-                          strokeWidth={borderLineWidth}
-                          strokeJoin="round"
-                          strokeCap="round"
-                        />
-                      </Group>
-                    ))}
+                    <Path
+                      path={borderPath}
+                      color={textureGlobeStyle.borders.lines.color}
+                      style="stroke"
+                      strokeWidth={borderLineWidth}
+                      strokeJoin="round"
+                      strokeCap="round"
+                    />
                   </Group>
                 )}
                 {smallVisited.map((i) => (
@@ -427,7 +423,6 @@ export function WorldMap({ width, height, zoom, visitedIds, onToggleVisited, tex
                     key={i}
                     x={map.anchors[i * 2]}
                     y={map.anchors[i * 2 + 1]}
-                    mapWidth={map.width}
                     color={colors[i]}
                     view={view}
                   />
@@ -543,19 +538,15 @@ type MapDotProps = {
   /** Position in map units. */
   x: number;
   y: number;
-  /** The map's width, in map units (it repeats east–west every mapWidth). */
-  mapWidth: number;
   color: string;
   view: DerivedValue<{ scale: number; x: number; y: number; tx: number; ty: number }>;
 };
 
 /** Glowing dot on a visited country too small to see in the texture. */
-function MapDot({ x, y, mapWidth, color, view }: MapDotProps) {
+function MapDot({ x, y, color, view }: MapDotProps) {
   const centre = useDerivedValue(() => {
     const v = view.get();
-    // The copy of the dot nearest the middle of the screen (the map wraps round).
-    const nearest = x + mapWidth * Math.round((v.x - x) / mapWidth);
-    return { x: v.tx + nearest * v.scale, y: v.ty + y * v.scale };
+    return { x: v.tx + x * v.scale, y: v.ty + y * v.scale };
   });
   return <GlowDot centre={centre} color={color} />;
 }

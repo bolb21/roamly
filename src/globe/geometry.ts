@@ -28,6 +28,9 @@ export type CountryShape = {
   feature: Feature<Polygon | MultiPolygon>;
 };
 
+/** A country without its outline: what's precomputed in countryList.json. */
+export type CountryInfo = Omit<CountryShape, 'feature'>;
+
 export type GlobeData = {
   /** Full 1:110m detail, used when zoomed in. */
   detailed: GlobeGeometry;
@@ -53,6 +56,84 @@ type CountryFeature = Feature<Geometry, { name: string }>;
 function countryFeatures(topology: Topology): CountryFeature[] {
   const object = topology.objects.countries as GeometryCollection<{ name: string }>;
   return feature(topology, object).features as CountryFeature[];
+}
+
+const isPolygonal = (f: CountryFeature) =>
+  f.geometry !== null && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon');
+
+/**
+ * The app's country list from a topology, in feature order (outlines left out): id,
+ * name, anchor and radius. Ids are made unique: a country whose ISO code is already
+ * taken (Ashmore and Cartier Is. shares Australia's) or missing uses its name.
+ * Slow for detailed data (~0.2 s), so scripts/build-globe-textures.mjs runs it ahead
+ * of time and writes src/globe/countryList.json.
+ */
+export function buildCountryList(topology: Topology): CountryInfo[] {
+  const used = new Set<string>();
+  return countryFeatures(topology)
+    .filter(isPolygonal)
+    .map((f) => {
+      const name = f.properties?.name ?? 'Unknown';
+      let id = f.id != null ? String(f.id) : name;
+      if (used.has(id)) id = name;
+      used.add(id);
+      const g = f.geometry as Polygon | MultiPolygon;
+      const polygons = g.type === 'Polygon' ? [g.coordinates] : g.coordinates;
+      const anchor = largestPolygonCentroid(polygons);
+      return { id, name, anchor, radius: furthestPoint(anchor, polygons) };
+    });
+}
+
+/**
+ * Globe data from a precomputed country list (see buildCountryList) and its detailed
+ * topology (whose polygonal features, in order, are the list's outlines). The globe's
+ * vector drawing uses the lighter `drawingTopology`; its countries are matched to the
+ * list by id, then name (countries only in the list aren't drawn by the vector globe).
+ */
+export function buildGlobeDataFromList(
+  list: CountryInfo[],
+  countryTopology: Topology,
+  drawingTopology: Topology,
+): GlobeData {
+  const outlines = countryFeatures(countryTopology).filter(isPolygonal);
+  if (outlines.length !== list.length) {
+    throw new Error(
+      `Country list (${list.length}) doesn't match its outlines (${outlines.length})`,
+    );
+  }
+  const countries: CountryShape[] = list.map((c, i) => ({
+    ...c,
+    feature: outlines[i] as Feature<Polygon | MultiPolygon>,
+  }));
+
+  const anchorPoints: number[] = [];
+  for (const { anchor } of countries) {
+    const [lon, lat] = anchor;
+    anchorPoints.push(
+      Math.cos(lat * DEG) * Math.cos(lon * DEG),
+      Math.cos(lat * DEG) * Math.sin(lon * DEG),
+      Math.sin(lat * DEG),
+    );
+  }
+
+  const indexById = new Map(list.map((c, i) => [c.id, i]));
+  const indexByName = new Map(list.map((c, i) => [c.name, i]));
+  const presimplified = presimplify(drawingTopology as Parameters<typeof presimplify>[0]);
+  const simplifiedTopology = simplify(presimplified, quantile(presimplified, SIMPLIFY_QUANTILE));
+  const fullFeatures = countryFeatures(drawingTopology);
+  const simpleFeatures = countryFeatures(simplifiedTopology);
+  const countryIndexByFeature = fullFeatures.map((f) => {
+    const name = f.properties?.name ?? 'Unknown';
+    const id = f.id != null ? String(f.id) : name;
+    return indexById.get(id) ?? indexByName.get(name) ?? -1;
+  });
+
+  return {
+    detailed: toGeometry(fullFeatures, countryIndexByFeature),
+    simplified: toGeometry(simpleFeatures, countryIndexByFeature),
+    countries,
+    anchorPoints,
+  };
 }
 
 export function buildGlobeData(topology: Topology): GlobeData {

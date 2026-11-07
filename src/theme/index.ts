@@ -55,7 +55,7 @@ export const textureGlobeStyle = {
    * Land: `color` × (reliefMin + reliefRange × relief), where relief is 0–1 and 0.5 is
    * flat ground. A bigger range makes mountains stand out more.
    */
-  land: { color: '#9EA6B4', reliefMin: 0.36, reliefRange: 1.3 },
+  land: { color: '#9EA6B4', reliefMin: 0.32, reliefRange: 1.42 },
   /**
    * Light from the top-left of the screen: `direction` is (right, up, towards you).
    * `ambient` keeps the shadow side readable (0 = black, 1 = no shading).
@@ -84,18 +84,15 @@ export const textureGlobeStyle = {
    * `fadeFrom` and `fadeTo`, as they'd look blurry close up.
    */
   clouds: { opacity: 0.38, color: '#F4F8FF', fadeFrom: 1.6, fadeTo: 3 },
-  /**
-   * Fine ripples on the sea, strongest in the sun highlight. `size` is the ripple
-   * size in texture pixels (smaller = finer); `grain` is a faint texture everywhere.
-   */
-  ripple: { strength: 0.45, size: 0.9, grain: 0.03 },
   /** Flat map land brightness (it has no sphere lighting; 1 = as the texture). */
   mapBrightness: 0.86,
+  /** Space (px) between the zoomed-out flat map and the screen's edges. */
+  mapMargin: 14,
   /**
    * Visited countries: their colour × (tintBase + tintRelief × relief), so mountains
    * still show through the colour. Colours come from visitedColorFor() below.
    */
-  visited: { tintBase: 0.6, tintRelief: 0.8 },
+  visited: { tintBase: 0.42, tintRelief: 1.16 },
   /**
    * Country borders. Zoomed out they come from the edges in the country texture
    * (`color`, whose alpha sets the strength; `softness` ≈ width in px). Zoomed in they
@@ -105,9 +102,9 @@ export const textureGlobeStyle = {
   borders: {
     color: 'rgba(255, 255, 255, 0.45)',
     softness: 0.5,
-    lines: { color: 'rgba(255, 255, 255, 0.8)', width: 0.8 },
-    linesFrom: 2.2,
-    linesFull: 3,
+    lines: { color: 'rgba(255, 255, 255, 0.85)', width: 1.4 },
+    linesFrom: 1.6,
+    linesFull: 2.3,
   },
   /**
    * Selected country: brightened, with a soft glowing outline `glowWidth` px wide.

@@ -9,11 +9,16 @@ import { geoContains, geoDistance } from 'd3-geo';
 import type { CountryShape } from './geometry';
 
 /**
- * Every country can be hit anywhere within this distance (px) of its anchor, even
- * if it's smaller than that on screen. So tiny countries get a fingertip-sized
- * target, while bigger ones are left to the normal inside-the-border test.
+ * Once zoomed in (see TINY_TARGETS_FROM_PX), every country can be hit anywhere within
+ * this distance (px) of its anchor, even if it's smaller than that on screen. So
+ * microstates (Andorra, Vatican…) get a fingertip-sized target.
  */
-const MIN_TARGET_PX = 10;
+const MIN_TARGET_PX = 7;
+/**
+ * Tiny-country targets only apply when the globe's radius (or the map's px per radian)
+ * is at least this big; zoomed out they'd cover large parts of their neighbours.
+ */
+const TINY_TARGETS_FROM_PX = 500;
 /** How far (px) off a coastline a tap can land and still pick that country. */
 const COAST_SLOP_PX = 8;
 
@@ -39,11 +44,11 @@ export function countryAt(
   const mightReach = (i: number, extra: number) =>
     countries[i].radius >= Math.PI / 2 || distances[i] <= countries[i].radius + extra;
 
-  // 1. Tiny countries' minimum targets win (nearest anchor first), or they'd be
-  //    impossible to hit: Luxembourg would always lose to France or Germany.
+  // 1. Zoomed in, tiny countries' minimum targets win (nearest anchor first), or they'd
+  //    be impossible to hit: Vatican would always lose to Italy.
   let best: number | null = null;
   let bestDistance = Infinity;
-  for (let i = 0; i < countries.length; i++) {
+  for (let i = 0; i < countries.length && radiusPx >= TINY_TARGETS_FROM_PX; i++) {
     if (countries[i].radius >= minTarget) continue;
     if (distances[i] <= minTarget && distances[i] < bestDistance) {
       best = i;

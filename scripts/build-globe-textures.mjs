@@ -32,7 +32,7 @@ import { feature } from 'topojson-client';
 const require = createRequire(import.meta.url);
 const ROOT = new URL('../', import.meta.url);
 // The app's own country list and tap test, so ids and checks match the app exactly.
-const { buildGlobeData } = await import(new URL('src/globe/geometry.ts', ROOT));
+const { buildCountryList } = await import(new URL('src/globe/geometry.ts', ROOT));
 const { countryAt } = await import(new URL('src/globe/hitTest.ts', ROOT));
 
 // --- Settings ---
@@ -228,32 +228,35 @@ function fillRings(target, width, height, rings, value) {
   }
 }
 
-/** Matches each 50m country to the app's (110m) country list. */
-function matchCountries(appCountries) {
+/**
+ * The app's country list: every polygonal 1:50m country, in feature order (texture id
+ * = list index + 1). Also written to src/globe/countryList.json with precomputed
+ * anchors, which the app loads instead of computing them at startup.
+ */
+function countryList() {
   const topology = require('world-atlas/countries-50m.json');
   const features = feature(topology, topology.objects.countries).features.filter(
     (f) => f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon'),
   );
-  const byId = new Map(appCountries.map((c, i) => [c.id, i]));
-  const byName = new Map(appCountries.map((c, i) => [c.name, i]));
-  const matched = new Set();
-  const unassigned = [];
-  const items = features.map((f) => {
-    const name = f.properties?.name ?? 'Unknown';
-    const index = byId.get(f.id != null ? String(f.id) : name) ?? byName.get(name);
-    if (index === undefined) {
-      unassigned.push(name);
-      return { feature: f, value: UNASSIGNED };
-    }
-    matched.add(index);
-    return { feature: f, value: index + 1 };
-  });
-  const missing = appCountries.filter((_, i) => !matched.has(i)).map((c) => c.name);
-  log(`Countries: ${items.length} detailed outlines, ${unassigned.length} not in the app's list`);
-  if (missing.length) log('WARNING: app countries with no detailed outline:', missing.join(', '));
-  // Unassigned land first, so app countries win wherever outlines overlap.
-  items.sort((a, b) => (a.value === UNASSIGNED ? -1 : 0) - (b.value === UNASSIGNED ? -1 : 0));
-  return { items, unassigned };
+  const list = buildCountryList(topology);
+  if (list.length !== features.length) throw new Error('Country list and outlines differ');
+  if (list.length >= UNASSIGNED) throw new Error('Too many countries for an 8-bit id');
+  const round = (x, digits) => Math.round(x * 10 ** digits) / 10 ** digits;
+  writeFileSync(
+    new URL('src/globe/countryList.json', ROOT),
+    JSON.stringify(
+      list.map((c) => ({
+        id: c.id,
+        name: c.name,
+        anchor: [round(c.anchor[0], 4), round(c.anchor[1], 4)],
+        radius: round(c.radius, 5),
+      })),
+    ) + '\n',
+  );
+  log(`Countries: ${list.length} (written to src/globe/countryList.json)`);
+  const countries = list.map((c, i) => ({ ...c, feature: features[i] }));
+  const items = features.map((f, i) => ({ feature: f, value: i + 1 }));
+  return { countries, items };
 }
 
 function rasteriseCountries(items, width) {
@@ -439,6 +442,11 @@ const CHECKS = [
   { place: 'Moscow', lon: 37.62, lat: 55.76 },
   { place: 'Chukotka, Russia (west of 180°)', lon: -175, lat: 66 },
   { place: 'Antarctic interior', lon: 40, lat: -80 },
+  { place: 'Andorra la Vella', lon: 1.52, lat: 42.51 },
+  { place: 'Monaco', lon: 7.42, lat: 43.74 },
+  { place: 'Valletta, Malta', lon: 14.45, lat: 35.9 },
+  { place: 'Singapore', lon: 103.82, lat: 1.35 },
+  { place: 'Vatican', lon: 12.453, lat: 41.904 },
 ];
 
 function checkIds(appCountries, ids, width) {
@@ -466,8 +474,7 @@ function checkIds(appCountries, ids, width) {
 
 // --- Run ---
 
-const appCountries = buildGlobeData(require('world-atlas/countries-110m.json')).countries;
-const { items, unassigned } = matchCountries(appCountries);
+const { countries: appCountries, items } = countryList();
 
 const elevation = await readElevation();
 const relief = shadeRelief(elevation);
@@ -553,7 +560,7 @@ await grey(cloud, CLOUD_SIZE, CLOUD_SIZE / 2)
 writeFileSync(
   new URL('country-ids.json', OUT),
   JSON.stringify({
-    note: 'Texture id = app country index + 1; 0 = sea; 255 = land not in the app list yet.',
+    note: 'Texture id = app country index + 1 (src/globe/countryList.json order); 0 = sea.',
     countries: appCountries.map((c, i) => ({
       textureId: i + 1,
       id: c.id,
@@ -561,7 +568,6 @@ writeFileSync(
       pixels2048: pixelCounts[2048][i],
       pixels4096: pixelCounts[4096][i],
     })),
-    unassigned,
   }) + '\n',
 );
 writeFileSync(new URL('id-check.md', PREVIEW), verifyText + '\n');

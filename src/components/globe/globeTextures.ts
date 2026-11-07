@@ -23,8 +23,14 @@ const IDS_2048 = require('../../../assets/globe/countries-2048.png');
 const IDS_4096 = require('../../../assets/globe/countries-4096.png');
 const CLOUDS_2048 = require('../../../assets/globe/clouds-2048.jpg');
 
-/** Linear filtering with mipmaps, so the textures stay smooth when small. */
+/** Linear filtering with mipmaps, so the textures stay smooth when small (flat map). */
 export const SMOOTH = { filter: FilterMode.Linear, mipmap: MipmapMode.Linear };
+/**
+ * Linear filtering without mipmaps (globe). On the globe the texture position jumps at
+ * ±180°, which made mipmapped sampling draw a thin seam line from pole to pole; the
+ * globe never shows the textures small enough to need mipmaps.
+ */
+export const LINEAR = { filter: FilterMode.Linear, mipmap: MipmapMode.None };
 /** Country ids must never blend, so they're sampled without smoothing. */
 export const EXACT = { filter: FilterMode.Nearest, mipmap: MipmapMode.None };
 /**

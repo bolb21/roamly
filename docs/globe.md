@@ -320,3 +320,33 @@ Measured by reasoning about the work, not on a phone; check the readout on devic
   (8 reads) and the 4-sample soft edges (down to 1).
 - Texture memory with everything loaded: ~70 MB of graphics memory (4096 and 2048
   earth and ids, clouds).
+
+## Every country, cleaner globe, one-piece map
+
+- **Country list = all 241 Natural Earth 1:50m countries and territories** (Andorra,
+  Monaco, Malta, Singapore, every island territory), in `src/globe/countryList.json`
+  with precomputed anchors (computing them took ~0.2 s, too slow for startup). The
+  texture script writes it (`buildCountryList`), and the country texture's ids follow
+  its order, so every piece of land belongs to a selectable country. Ids are ISO codes
+  (made unique: Ashmore and Cartier Is. shares Australia's, so it uses its name);
+  existing saved visits keep working. Tapping uses the 50m outlines; the vector globe
+  (fallback) still draws the 110m outlines, matched to the list by id or name.
+- **Microstates** (Vatican, Monaco…) are smaller than a texture pixel. Once zoomed in
+  (globe radius or map px-per-radian ≥ 500) each gets a 7 px tap target round its
+  anchor, and a glowing dot when visited.
+- **No seam at 180°**: the globe samples its textures without mipmaps (`LINEAR`); with
+  mipmaps the jump in texture position at ±180° drew a line from pole to pole. The flat
+  map, which has no jump, keeps mipmaps.
+- **Ocean ripples removed**: sized by zoom, their pattern re-formed while pinching and
+  looked like an overlay swirling over the globe. Clouds stay (still, fading out with zoom).
+- **Coastal pixels** the land mask covers but no country id reaches take their country
+  from a little further out, and the visited share counts only land samples, so
+  visited coasts aren't fringed with grey.
+- **Borders**: thicker white vector lines (1.4 px) from zoom 1.6, covering the
+  texture's stepped colour edges; on the map they're thinner when zoomed out.
+- **Globe max zoom 7.**
+- **Flat map**: one map (no wrap-around). Zoom 1 fits the whole map inside the screen
+  with `mapMargin` to spare, and it opens like that; zoom to 16×. Cropped to 84°N–70°S
+  so Antarctica's coast is on it. Its vector outlines are only built if the fallback
+  is ever drawn.
+

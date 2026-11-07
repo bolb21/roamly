@@ -125,13 +125,11 @@ float4 tintOf(float id) {
   return c.a > 0.0 ? float4(float3(c.rgb) / float(c.a), float(c.a)) : float4(0.0);
 }
 
-// Land colour at earth-space uv (rgb) and the selection glow there (a).
-// perPx is the size of one screen pixel in earth-space units (x and y).
-float4 landAt(float2 uv, float relief, float2 perPx) {
+// landAt's work, sampling the country ids s away. Returns a = -1 if no sample hit land.
+float4 landSamples(float2 uv, float relief, float2 perPx, float2 s) {
   // Four country samples about a pixel apart: their colours are averaged so colour
   // boundaries look soft, and where they disagree there's a border. Spacing them in
   // screen pixels keeps borders the same thin width at any zoom.
-  float2 s = perPx * edgeSoftness;
   float id0 = countryAt(uv + float2(-s.x, -s.y));
   float id1 = countryAt(uv + float2(s.x, -s.y));
   float id2 = countryAt(uv + float2(-s.x, s.y));
@@ -140,7 +138,10 @@ float4 landAt(float2 uv, float relief, float2 perPx) {
   float4 t1 = tintOf(id1);
   float4 t2 = tintOf(id2);
   float4 t3 = tintOf(id3);
-  float visited = (t0.a + t1.a + t2.a + t3.a) * 0.25;
+  // Share visited, of the samples that hit land (so coastal pixels aren't half grey).
+  float onLand = float(id0 > 0.5) + float(id1 > 0.5) + float(id2 > 0.5) + float(id3 > 0.5);
+  if (onLand < 0.5) return float4(0.0, 0.0, 0.0, -1.0);
+  float visited = (t0.a + t1.a + t2.a + t3.a) / onLand;
   float3 tint = (t0.rgb * t0.a + t1.rgb * t1.a + t2.rgb * t2.a + t3.rgb * t3.a)
     / max(t0.a + t1.a + t2.a + t3.a, 0.0001);
 
@@ -174,20 +175,27 @@ float4 landAt(float2 uv, float relief, float2 perPx) {
   }
   return float4(ground, glow);
 }
+
+// Land colour at earth-space uv (rgb) and the selection glow there (a).
+// perPx is the size of one screen pixel in earth-space units (x and y).
+float4 landAt(float2 uv, float relief, float2 perPx) {
+  float4 near = landSamples(uv, relief, perPx, perPx * edgeSoftness);
+  // Along coasts the land mask can reach a pixel past the country ids; take those
+  // pixels' country from a little further out, so they aren't left grey.
+  if (near.a < 0.0) near = landSamples(uv, relief, perPx, float2(0.9));
+  return float4(near.rgb, max(near.a, 0.0));
+}
 `;
 
 /**
  * The planet: land (see LAND) and sea on a lit sphere, with clouds. Lighting
  * is in screen space: light from the top-left, a lifted shadow side, a broad sun
- * highlight on the sea with fine ripples in it, and a blue rim glow.
+ * highlight on the sea, and a blue rim glow.
  */
 const EARTH = `${SPHERE}${LAND}
 uniform shader clouds;
 uniform float cloudOpacity;
 uniform float4 cloudColor;
-uniform float rippleStrength;
-uniform float rippleSize;
-uniform float oceanGrain;
 uniform float4 oceanShallow;
 uniform float4 oceanMid;
 uniform float4 oceanDeep;
@@ -200,22 +208,6 @@ uniform float sunSharpness;
 uniform float4 rimColor;
 uniform float rimStrength;
 uniform float rimPower;
-
-// Repeatable random number in [0, 1) for a point (no sine, so it stays precise).
-float hash(float2 q) {
-  float3 q3 = fract(float3(q.xyx) * 0.1031);
-  q3 += dot(q3, q3.yzx + 33.33);
-  return fract((q3.x + q3.y) * q3.z);
-}
-
-// Smooth value noise.
-float noise(float2 q) {
-  float2 i = floor(q);
-  float2 f = fract(q);
-  f = f * f * (3.0 - 2.0 * f);
-  return mix(mix(hash(i), hash(i + float2(1.0, 0.0)), f.x),
-    mix(hash(i + float2(0.0, 1.0)), hash(i + float2(1.0, 1.0)), f.x), f.y);
-}
 
 half4 main(float2 p) {
   float alpha = edgeAlpha(p);
@@ -238,14 +230,6 @@ half4 main(float2 p) {
     earthSize.y / (PI * radius));
   float4 ground = landAt(uv, t.r, perPx);
 
-  // Fine ripples on the sea (stuck to the globe). Never finer than about two screen
-  // pixels, so they don't shimmer when the globe is small.
-  float cell = max(rippleSize, perPx.y * 1.8);
-  // Stretched east-west, so they read as glints on waves rather than grain.
-  float2 waves = uv / cell * float2(0.3, 1.0);
-  float ripple = noise(waves) * 0.65 + noise(waves * 2.3 + 17.0) * 0.35;
-  ocean *= 1.0 + (ripple - 0.5) * oceanGrain;
-
   // Tighten the mask a little so JPEG softening doesn't blur the coast.
   float land = smoothstep(0.3, 0.7, t.g);
   float3 color = mix(ocean, ground.rgb, land);
@@ -258,11 +242,11 @@ half4 main(float2 p) {
   // Light from the top-left of the screen; the shadow side stays readable.
   float diffuse = max(dot(v, light), 0.0);
   color *= ambient + (1.0 - ambient) * diffuse;
-  // Broad sun highlight on the water (dimmed under cloud), broken up by the ripples.
+  // Broad sun highlight on the water (dimmed under cloud).
   float3 halfway = normalize(light + float3(0.0, 0.0, 1.0));
   float sun = pow(max(dot(v, halfway), 0.0), sunSharpness) * sunStrength
     * (1.0 - land) * (1.0 - cloud);
-  color += sunColor.rgb * sun * (1.0 + (ripple - 0.5) * 2.0 * rippleStrength);
+  color += sunColor.rgb * sun;
   // Blue glow towards the edge (fresnel).
   float rim = pow(1.0 - v.z, rimPower) * rimStrength;
   color = mix(color, rimColor.rgb, rim);
@@ -287,7 +271,7 @@ uniform float brightness;
 half4 main(float2 p) {
   // Screen px → map units (viewScale px per unit, map unit (0, 0) at viewOffset).
   float2 m = (p - viewOffset) / viewScale;
-  if (m.y < 0.0 || m.y > mapHeight) return half4(0.0);
+  if (m.x < 0.0 || m.x > mapWidth || m.y < 0.0 || m.y > mapHeight) return half4(0.0);
   float lon = m.x / mapWidth * 2.0 * PI_L - PI_L;
   // Inverse Mercator (mercatorScale map units per radian; mercatorTop = y of the top edge).
   float lat = 2.0 * atan(exp((mercatorTop - m.y) / mercatorScale)) - PI_L / 2.0;

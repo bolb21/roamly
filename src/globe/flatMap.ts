@@ -1,6 +1,7 @@
 // Flat (2D) world map data: the same countries as the globe, on a Mercator map (the
-// familiar web-map layout) cropped to MAP_NORTH…MAP_SOUTH, so it's nearer square than
-// a whole-world map and Antarctica's huge Mercator strip is left out.
+// familiar web-map layout) cropped to MAP_NORTH…MAP_SOUTH: nearer square than a
+// whole-world map, while keeping Antarctica's coast (so it can be selected) without
+// Mercator's huge stretched strip of the interior.
 //
 // The textured map is drawn by a shader (globeShader.ts) using mercatorScale and
 // mercatorTop; the vector outlines here are its fallback, and the projection is used
@@ -16,9 +17,9 @@ import type { CountryShape } from './geometry';
 
 /** Width of the map in map units; screen size is applied by the map view. */
 export const FLAT_MAP_WIDTH = 1000;
-/** Latitudes of the map's top and bottom edges (northern Greenland to Cape Horn). */
+/** Latitudes of the map's top and bottom edges (northern Greenland to Antarctica's coast). */
 export const MAP_NORTH = 84;
-export const MAP_SOUTH = -57;
+export const MAP_SOUTH = -70;
 
 export type FlatMapData = {
   width: number;
@@ -27,10 +28,6 @@ export type FlatMapData = {
   unitsPerRadian: number;
   /** Mercator y of the map's top edge, in map units (the shader needs it). */
   mercatorTop: number;
-  /** SVG path per country, in the same order as `countries`. */
-  countryPaths: string[];
-  /** All countries in one SVG path. */
-  landPath: string;
   /** The map's outline (its edges). */
   outlinePath: string;
   /** Lines of latitude and longitude every 10°. */
@@ -67,7 +64,6 @@ export function getFlatMapData(countries: CountryShape[]): FlatMapData {
   const { projection, scale, top, height } = mapProjection();
   const path = geoPath(projection).digits(1);
 
-  const countryPaths = countries.map((c) => path(c.feature) ?? '');
   const anchors: number[] = [];
   for (const c of countries) {
     const [x, y] = projection(c.anchor) ?? [0, 0];
@@ -79,8 +75,6 @@ export function getFlatMapData(countries: CountryShape[]): FlatMapData {
     height,
     unitsPerRadian: scale,
     mercatorTop: top,
-    countryPaths,
-    landPath: countryPaths.join(''),
     outlinePath: `M0 0H${FLAT_MAP_WIDTH}V${height}H0Z`,
     graticulePath: path(geoGraticule10()) ?? '',
     anchors,
@@ -112,4 +106,19 @@ export function getFlatMapBorderPath(): string {
     borderPath = geoPath(mapProjection().projection).digits(1)(borders) ?? '';
   }
   return borderPath;
+}
+
+let vectorPaths: { countryPaths: string[]; landPath: string } | null = null;
+
+/**
+ * Each country's outline as an SVG path in map units, and all of them in one path:
+ * only for the vector fallback map, so only built if that's ever drawn.
+ */
+export function getFlatMapVectorPaths(countries: CountryShape[]) {
+  if (!vectorPaths) {
+    const path = geoPath(mapProjection().projection).digits(1);
+    const countryPaths = countries.map((c) => path(c.feature) ?? '');
+    vectorPaths = { countryPaths, landPath: countryPaths.join('') };
+  }
+  return vectorPaths;
 }

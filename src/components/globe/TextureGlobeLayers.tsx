@@ -25,6 +25,7 @@ import { DEBUG_ALL_VISITED, textureGlobeStyle } from '@/theme';
 import {
   EXACT,
   LAND_UNIFORMS,
+  LINEAR,
   SMOOTH,
   TEXTURE_SPACE,
   useVisitedPalette,
@@ -77,7 +78,7 @@ const normalized = (v: readonly number[]) => {
   return v.map((c) => c / length);
 };
 
-const { test, ocean, light, sun, rim, clouds: cloudStyle, ripple } = textureGlobeStyle;
+const { test, ocean, light, sun, rim, clouds: cloudStyle } = textureGlobeStyle;
 const TEST_UNIFORMS = {
   markerA: toVector(-0.13, 51.51), // London
   markerB: toVector(151.21, -33.87), // Sydney
@@ -102,9 +103,6 @@ const EARTH_UNIFORMS = {
   rimStrength: rim.strength,
   rimPower: rim.power,
   cloudColor: rgba(cloudStyle.color),
-  rippleStrength: ripple.strength,
-  rippleSize: ripple.size,
-  oceanGrain: ripple.grain,
 };
 
 /** App country indexes too small to see in the country texture (they get a dot when visited). */
@@ -112,8 +110,19 @@ export const SMALL_COUNTRIES = countryIds.countries
   .filter((c) => c.pixels2048 < textureGlobeStyle.smallCountryDots.maxPixels)
   .map((c) => c.textureId - 1);
 
-/** The land shaders' three textures, in the order globeShader.ts declares them. */
-export function LandTextures({ textures, palette }: { textures: TextureSet; palette: SkImage }) {
+/**
+ * The land shaders' three textures, in the order globeShader.ts declares them. The
+ * globe samples without mipmaps (see LINEAR); the flat map with.
+ */
+export function LandTextures({
+  textures,
+  palette,
+  mipmaps,
+}: {
+  textures: TextureSet;
+  palette: SkImage;
+  mipmaps: boolean;
+}) {
   return (
     <>
       {/* Repeats across ±180° so the seam blends; clamped at the poles. */}
@@ -123,7 +132,7 @@ export function LandTextures({ textures, palette }: { textures: TextureSet; pale
         fit="fill"
         tx="repeat"
         ty="clamp"
-        sampling={SMOOTH}
+        sampling={mipmaps ? SMOOTH : LINEAR}
       />
       <ImageShader
         image={textures.ids}
@@ -238,14 +247,14 @@ export function TextureGlobeLayers({
           <Shader source={effect} uniforms={uniforms}>
             {mode === 'earth' && textures && palette && clouds ? (
               <>
-                <LandTextures textures={textures} palette={palette} />
+                <LandTextures textures={textures} palette={palette} mipmaps={false} />
                 <ImageShader
                   image={clouds}
                   rect={TEXTURE_SPACE}
                   fit="fill"
                   tx="repeat"
                   ty="clamp"
-                  sampling={SMOOTH}
+                  sampling={LINEAR}
                 />
               </>
             ) : null}
